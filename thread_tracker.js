@@ -495,12 +495,13 @@
                 /* border: 1px solid #555; */ /* Optional: if it needs its own border */
                 /* border-radius: 3px; */
             `;
-            moreIndicator.onmouseover = () => moreIndicator.style.textDecoration = 'underline';
-            moreIndicator.onmouseout = () => moreIndicator.style.textDecoration = 'none';
+            moreIndicator.style.setProperty('text-decoration', 'underline', 'important');
+            moreIndicator.style.setProperty('text-decoration', 'none', 'important');
 
             let tooltip = null; // To hold the tooltip element
 
             moreIndicator.addEventListener('mouseenter', (event) => {
+                console.log('[DEBUG] Mouse entered (+n) indicator');
                 if (tooltip) tooltip.remove(); // Remove existing tooltip if any
 
                 tooltip = document.createElement('div');
@@ -545,7 +546,8 @@
                     tooltip.appendChild(tooltipLink);
                 });
 
-                document.body.appendChild(tooltip); // Append to body to avoid clipping issues
+                console.log('[DEBUG] Tooltip created and should be visible');
+              document.body.appendChild(tooltip); // Append to body to avoid clipping issues
 
                 // Position tooltip relative to the indicator
                 const indicatorRect = moreIndicator.getBoundingClientRect();
@@ -562,17 +564,21 @@
                 }
             });
 
-            moreIndicator.addEventListener('mouseleave', () => {
-                if (tooltip) {
-                    // Delayed removal to allow mouse to move into tooltip if needed, though simple removal is often fine
-                    setTimeout(() => {
-                        if (tooltip && !tooltip.matches(':hover')) { // Check if mouse isn't over tooltip itself
-                            tooltip.remove();
-                            tooltip = null;
-                        }
-                    }, 100); // Short delay
-                }
-            });
+moreIndicator.addEventListener('mouseleave', () => {
+    if (tooltip) {
+        // Allow time for user to move mouse from indicator to tooltip
+        setTimeout(() => {
+            if (
+                tooltip &&
+                !tooltip.matches(':hover') &&
+                !moreIndicator.matches(':hover')
+            ) {
+                tooltip.remove();
+                tooltip = null;
+            }
+        }, 250); // Increased delay gives user time to move to tooltip
+    }
+});
 
             // Tooltip should also hide if mouse leaves it
             if (tooltip) { // This event listener needs to be on the tooltip itself, after it's created
@@ -581,23 +587,57 @@
 
             // Append the moreIndicator
             if (threadsToDisplayInList.length > 0) {
-                // Append to the titleTimeContainer of the last displayed thread item
-                const lastThreadItemDiv = threadDisplayContainer.lastChild; // This assumes it's the last one
-                if (lastThreadItemDiv && lastThreadItemDiv.querySelector) { // Check if lastChild is an element and has querySelector
-                    const titleTimeContainerOfLastItem = lastThreadItemDiv.querySelector('div > div'); // Path to titleTimeContainer
-                    if (titleTimeContainerOfLastItem) {
+                const lastThreadItemDiv = threadDisplayContainer.lastChild; // This is the div with style 'display: flex; align-items: flex-start; ...'
+
+                if (lastThreadItemDiv && lastThreadItemDiv.children && lastThreadItemDiv.children.length >= 2) {
+                    // lastThreadItemDiv has two main children: colorBox (children[0]) and textContentDiv (children[1])
+                    const textContentDivOfLastItem = lastThreadItemDiv.children[1];
+
+                    // textContentDiv has one child: titleTimeContainer
+                    const titleTimeContainerOfLastItem = textContentDivOfLastItem ? textContentDivOfLastItem.firstChild : null;
+
+                    // titleTimeContainer has two children: titleLink (a) and timestampSpan (span)
+                    const timestampSpanOfLastItem = titleTimeContainerOfLastItem ? titleTimeContainerOfLastItem.querySelector('span') : null;
+
+                    if (timestampSpanOfLastItem && timestampSpanOfLastItem.parentNode === titleTimeContainerOfLastItem) {
+                        // Insert the moreIndicator directly after the timestampSpan
+                        timestampSpanOfLastItem.parentNode.insertBefore(moreIndicator, timestampSpanOfLastItem.nextSibling);
+                    } else if (titleTimeContainerOfLastItem) {
+                        // Fallback: if timestampSpan not found (e.g. structure changed), append to titleTimeContainer
                         titleTimeContainerOfLastItem.appendChild(moreIndicator);
+                        console.warn('[OTK Tracker] Timestamp span not found in the last thread item for (+n) indicator. Appended to title-time container as fallback.');
+                    } else if (textContentDivOfLastItem) {
+                        // Fallback: if titleTimeContainer not found, append to textContentDiv
+                        textContentDivOfLastItem.appendChild(moreIndicator);
+                        console.warn('[OTK Tracker] Title-time container not found in the last thread item for (+n) indicator. Appended to text content div as fallback.');
                     } else {
-                        threadDisplayContainer.appendChild(moreIndicator); // Fallback
+                        // Fallback: if textContentDivOfLastItem itself is not found (shouldn't happen if lastThreadItemDiv is valid), append to lastThreadItemDiv
+                        lastThreadItemDiv.appendChild(moreIndicator);
+                        console.warn('[OTK Tracker] Text content div not found in the last thread item for (+n) indicator. Appended to last thread item div as fallback.');
                     }
                 } else {
-                     threadDisplayContainer.appendChild(moreIndicator); // Fallback
+                     threadDisplayContainer.appendChild(moreIndicator); // Ultimate fallback: append to the main display container
+                     console.warn('[OTK Tracker] Last thread item div structure not as expected or not found for (+n) indicator. Appended to thread display container.');
                 }
             } else {
-                // If no threads are displayed in the list (e.g., all are dropped), append to container directly
-                // but ensure its style is appropriate (e.g., not a huge margin-left if it's the only thing)
+                // If no threads are displayed in the list (e.g., all are dropped or filtered out),
+                // append to container directly but ensure its style is appropriate.
                 moreIndicator.style.marginLeft = '0px'; // Reset margin if it's the only item
                 moreIndicator.style.paddingLeft = '23px'; // Re-add padding to align with where titles would start
+                // (23px was: colorBox(12px) + marginRight(6px) + textContent padding(4px) + a bit more for alignment)
+                // Let's adjust this based on the new structure.
+                // The first item's text usually aligns with the colorBox's right edge + its margin.
+                // colorBox width 12px + margin-right 6px = 18px.
+                // Thread item padding is 4px. So, 18px + 4px = 22px from the left edge of threadItemDiv.
+                // However, the moreIndicator is now within the titleTimeContainer, so its padding relative to parent is what matters.
+                // If it's directly in threadDisplayContainer, it should align like a thread item's text.
+                // The textContentDiv starts after colorBox (12px + 6px margin).
+                // The titleLink inside textContentDiv does not have additional left margin.
+                // So, if the moreIndicator is the only thing, it should effectively start where titles normally start.
+                // The threadItemDiv has padding: 4px.
+                // The colorBox (12px) + margin-right (6px) = 18px.
+                // So the text starts at 4px (item padding) + 18px = 22px from the edge of threadDisplayContainer.
+                moreIndicator.style.paddingLeft = '22px';
                 threadDisplayContainer.appendChild(moreIndicator);
             }
         }
