@@ -61,17 +61,17 @@
             const overlay = document.createElement('div');
         overlay.id = 'otk-loading-overlay';
         overlay.style.cssText = `
-            position: fixed; 
-            top: 0; 
-            left: 0; 
-            width: 100%; 
-            height: 100%; 
-            background-color: rgba(0,0,0,1); 
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,1);
             z-index: 100000; /* Ensure it's on top of everything, including viewer */
             display: none; /* Hidden by default */
-            flex-direction: column; 
-            align-items: center; 
-            justify-content: center; 
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
             font-family: Verdana, sans-serif;
             color: white;
         `;
@@ -84,11 +84,11 @@
         const progressBarContainer = document.createElement('div');
         progressBarContainer.id = 'otk-progress-bar-container';
         progressBarContainer.style.cssText = `
-            width: 60%; 
-            max-width: 400px; 
-            background-color: #333; 
-            border: 1px solid #555; 
-            border-radius: 5px; 
+            width: 60%;
+            max-width: 400px;
+            background-color: #333;
+            border: 1px solid #555;
+            border-radius: 5px;
             padding: 2px;
         `;
         overlay.appendChild(progressBarContainer);
@@ -96,14 +96,14 @@
         const progressBar = document.createElement('div');
         progressBar.id = 'otk-progress-bar';
         progressBar.style.cssText = `
-            width: 0%; 
-            height: 25px; 
-            background-color: #4CAF50; 
-            border-radius: 3px; 
-            text-align: center; 
-            line-height: 25px; 
-            color: white; 
-            font-weight: bold; 
+            width: 0%;
+            height: 25px;
+            background-color: #4CAF50;
+            border-radius: 3px;
+            text-align: center;
+            line-height: 25px;
+            color: white;
+            font-weight: bold;
             transition: width 0.3s ease;
         `;
         progressBarContainer.appendChild(progressBar);
@@ -354,7 +354,7 @@
             text-align: center;
             padding: 0 10px;
         `;
-        centerInfoContainer.style.flexGrow = '1'; 
+        centerInfoContainer.style.flexGrow = '1';
         consoleLog('[GUI Setup - Initial] centerInfoContainer.style.flexGrow explicitly set to 1.');
 
         const otkThreadTitleDisplay = document.createElement('div');
@@ -369,9 +369,9 @@
         const otkStatsDisplay = document.createElement('div');
         otkStatsDisplay.id = 'otk-stats-display';
         otkStatsDisplay.style.cssText = `
-            font-size: 11px; 
-            display: flex; 
-            flex-direction: column; 
+            font-size: 11px;
+            display: flex;
+            flex-direction: column;
             align-items: center; /* This centers the span blocks */
             width: fit-content; /* Make block only as wide as its content */
             margin: 0 auto; /* Center the block itself if parent is wider */
@@ -414,8 +414,11 @@
         buttonContainer.id = 'otk-button-container';
         buttonContainer.style.cssText = `
             display: flex;
-            align-items: flex-end; /* Adjusted for better button alignment */
-            gap: 10px;
+            flex-direction: column;     /* Stack children vertically */
+            align-items: flex-end;      /* Align children (top/bottom rows) to the right */
+            justify-content: space-between; /* Push top row to top, bottom row to bottom */
+            gap: 5px;                   /* Small gap between top and bottom rows if needed */
+            height: 100%;               /* Occupy full height of parent for space-between */
         `;
         otkGui.appendChild(buttonContainer);
     } else { // If GUI wrapper exists, ensure consistency
@@ -490,9 +493,9 @@
             const otkStatsDisplay = document.createElement('div');
             otkStatsDisplay.id = 'otk-stats-display';
             otkStatsDisplay.style.cssText = `
-                font-size: 11px; 
-                display: flex; 
-                flex-direction: column; 
+                font-size: 11px;
+                display: flex;
+                flex-direction: column;
                 align-items: center; /* This centers the span blocks */
                 width: fit-content; /* Make block only as wide as its content */
                 margin: 0 auto; /* Center the block itself if parent is wider */
@@ -639,7 +642,7 @@
             let originalThreadUrl = `https://boards.4chan.org/b/thread/${threadId}`;
 
 
-            if (messages.length > 0 && messages[0]) { 
+            if (messages.length > 0 && messages[0]) {
                 title = messages[0].title ? decodeEntities(messages[0].title) : `Thread ${threadId}`;
                 firstMessageTime = messages[0].time;
             } else {
@@ -664,10 +667,10 @@
 
         threadsToDisplayInList.forEach((thread, index) => {
             const threadItemDiv = document.createElement('div');
-            let marginBottom = index < (threadsToDisplayInList.length -1) ? '0px' : '3px'; 
+            let marginBottom = index < (threadsToDisplayInList.length -1) ? '0px' : '3px';
             threadItemDiv.style.cssText = `
                 display: flex;
-                align-items: flex-start; 
+                align-items: flex-start;
                 padding: 4px;
                 border-radius: 3px;
                 margin-bottom: ${marginBottom};
@@ -681,7 +684,7 @@
                 border-radius: 2px;
                 margin-right: 6px;
                 flex-shrink: 0;
-                margin-top: 1px; 
+                margin-top: 1px;
             `;
             threadItemDiv.appendChild(colorBox);
 
@@ -692,17 +695,17 @@
 
             const titleLink = document.createElement('a');
             titleLink.href = thread.url;
-            titleLink.target = '_blank'; 
-            const fullTitle = thread.title; 
+            titleLink.target = '_blank';
+            const fullTitle = thread.title;
             titleLink.textContent = truncateTitleWithWordBoundary(fullTitle, 40); // Max length adjusted
-            titleLink.title = fullTitle; 
+            titleLink.title = fullTitle;
             let titleLinkStyle = `
                 color: #e0e0e0;
                 text-decoration: none;
                 font-weight: bold;
                 font-size: 12px;
-                margin-bottom: 2px; 
-                display: block; 
+                margin-bottom: 2px;
+                display: block;
                 /* width: 100%; */ /* Removed to allow natural width up to container */
                 white-space: nowrap;
                 overflow: hidden;
@@ -717,7 +720,7 @@
             let timestampSpanStyle = `
                 font-size: 10px;
                 color: #aaa;
-                margin-left: 5px; 
+                margin-left: 5px;
             `;
 
             titleLink.style.cssText = titleLinkStyle;
@@ -733,7 +736,7 @@
 
                 if (otkViewer && otkViewer.style.display === 'none') {
                     // toggleViewer will call renderMessagesInViewer
-                    toggleViewer(); 
+                    toggleViewer();
                 } else if (otkViewer) {
                     // If viewer is already open, ensure content is rendered (might be redundant if toggleViewer always renders)
                     // and then scroll. If renderMessagesInViewer is heavy, only call if needed.
@@ -746,7 +749,7 @@
                          renderMessagesInViewer(); // Render if it wasn't made visible by toggleViewer
                     }
                 }
-                
+
                 // Attempt to scroll to the message after a brief delay to allow rendering
                 setTimeout(() => {
                     const messagesContainer = document.getElementById('otk-messages-container');
@@ -757,7 +760,7 @@
                         // A more robust check might be needed if multiple messages could have data-message-id="${thread.id}"
                         // (e.g. if a post quotes the OP)
                         // For now, this assumes the first such element is the one we want, or it's unique enough.
-                        
+
                         if (opMessageElement) {
                             consoleLog(`Scrolling to message element for thread OP ${thread.id}.`);
                             opMessageElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -767,7 +770,7 @@
                         } else {
                             consoleWarn(`Could not find message element for thread OP ${thread.id} to scroll to.`);
                             // If not found, scroll to top as a fallback, or do nothing.
-                            // messagesContainer.scrollTop = 0; 
+                            // messagesContainer.scrollTop = 0;
                         }
                     }
                 }, 100); // Delay to allow render. May need adjustment.
@@ -775,7 +778,7 @@
 
             const titleTimeContainer = document.createElement('div');
             titleTimeContainer.style.display = 'flex';
-            titleTimeContainer.style.alignItems = 'baseline'; 
+            titleTimeContainer.style.alignItems = 'baseline';
             titleTimeContainer.appendChild(titleLink);
             titleTimeContainer.appendChild(timestampSpan);
 
@@ -789,8 +792,8 @@
             const numberOfAdditionalThreads = threadDisplayObjects.length - 3;
             const hoverContainer = document.createElement('div');
             hoverContainer.style.cssText = `
-                display: inline-block; 
-                position: relative; 
+                display: inline-block;
+                position: relative;
             `;
             const moreIndicator = document.createElement('div');
             moreIndicator.id = 'otk-more-threads-indicator';
@@ -800,17 +803,17 @@
                 color: #ccc;
                 font-style: italic;
                 cursor: pointer;
-                padding: 3px 6px; 
-                margin-left: 8px; 
-                display: inline; 
+                padding: 3px 6px;
+                margin-left: 8px;
+                display: inline;
             `;
             hoverContainer.appendChild(moreIndicator);
 
             if (threadsToDisplayInList.length > 0) {
-                const lastThreadItemDiv = threadDisplayContainer.lastChild; 
-                const textContentDiv = lastThreadItemDiv?.children[1]; 
-                const titleTimeContainer = textContentDiv?.firstChild; 
-                const timestampSpan = titleTimeContainer?.querySelector('span'); 
+                const lastThreadItemDiv = threadDisplayContainer.lastChild;
+                const textContentDiv = lastThreadItemDiv?.children[1];
+                const titleTimeContainer = textContentDiv?.firstChild;
+                const timestampSpan = titleTimeContainer?.querySelector('span');
 
                 if (timestampSpan && timestampSpan.parentNode === titleTimeContainer) {
                     timestampSpan.parentNode.insertBefore(hoverContainer, timestampSpan.nextSibling);
@@ -824,9 +827,9 @@
                     threadDisplayContainer.appendChild(hoverContainer);
                     consoleWarn('Last thread item structure not found for (+n), appended to thread display container.');
                 }
-            } else { 
-                moreIndicator.style.marginLeft = '0px'; 
-                moreIndicator.style.paddingLeft = '22px'; 
+            } else {
+                moreIndicator.style.marginLeft = '0px';
+                moreIndicator.style.paddingLeft = '22px';
                 threadDisplayContainer.appendChild(hoverContainer);
             }
 
@@ -837,7 +840,7 @@
             hoverContainer.addEventListener('mouseenter', () => {
                 consoleLog('hoverContainer mouseenter: showing tooltip');
                 moreIndicator.style.textDecoration = 'underline';
-                if (tooltip) { 
+                if (tooltip) {
                     consoleLog('Removing existing tooltip before creating new one');
                     tooltip.remove();
                 }
@@ -855,7 +858,7 @@
                     font-size: 12px;
                     max-width: 280px; /* Slightly narrower */
                     box-shadow: 0 3px 8px rgba(0,0,0,0.6);
-                    pointer-events: auto; 
+                    pointer-events: auto;
                     display: block;
                     opacity: 1;
                     /* border: 1px solid red; */ /* For debugging visibility */
@@ -869,34 +872,34 @@
                     tooltipLink.textContent = truncateTitleWithWordBoundary(thread.title, 40); // Truncate here too
                     tooltipLink.title = thread.title; // Full title on hover
                     tooltipLink.style.cssText = `
-                        display: block; 
-                        color: #d0d0d0; 
+                        display: block;
+                        color: #d0d0d0;
                         text-decoration: none;
                         padding: 3px 0; /* More spacing */
                         white-space: nowrap;
                         overflow: hidden;
                         text-overflow: ellipsis;
                     `;
-                    tooltipLink.onmouseover = () => { tooltipLink.style.color = '#fff'; tooltipLink.style.textDecoration = 'underline';}; 
+                    tooltipLink.onmouseover = () => { tooltipLink.style.color = '#fff'; tooltipLink.style.textDecoration = 'underline';};
                     tooltipLink.onmouseout = () => { tooltipLink.style.color = '#d0d0d0'; tooltipLink.style.textDecoration = 'none';};
                     tooltip.appendChild(tooltipLink);
                 });
 
-                document.body.appendChild(tooltip); 
+                document.body.appendChild(tooltip);
                 consoleLog('Tooltip appended to body');
 
                 const indicatorRect = moreIndicator.getBoundingClientRect();
-                const tooltipRect = tooltip.getBoundingClientRect(); 
+                const tooltipRect = tooltip.getBoundingClientRect();
 
                 let leftPos = indicatorRect.left;
                 let topPos = indicatorRect.bottom + window.scrollY + 3; // Slightly more offset
 
                 if (leftPos + tooltipRect.width > window.innerWidth - 10) { // 10px buffer
-                    leftPos = window.innerWidth - tooltipRect.width - 10; 
+                    leftPos = window.innerWidth - tooltipRect.width - 10;
                 }
                 if (topPos + tooltipRect.height > window.innerHeight + window.scrollY - 10) {
                     consoleLog('Adjusting tooltip position to above indicator due to bottom overflow');
-                    topPos = indicatorRect.top + window.scrollY - tooltipRect.height - 3; 
+                    topPos = indicatorRect.top + window.scrollY - tooltipRect.height - 3;
                 }
                  if (leftPos < 10) leftPos = 10; // Prevent going off left edge
 
@@ -918,7 +921,7 @@
                             tooltip.remove();
                             tooltip = null;
                         }
-                    }, 300); 
+                    }, 300);
                 });
             });
 
@@ -931,7 +934,7 @@
                         tooltip.remove();
                         tooltip = null;
                     }
-                }, 300); 
+                }, 300);
             });
         }
     }
@@ -956,9 +959,9 @@
         // Determine loading text based on context if possible, or keep generic
         const loadingText = options.isToggleOpen ? "Restoring view..." : "Loading all messages...";
         showLoadingScreen(loadingText);
-        
+
         // Use a slight delay to ensure the loading screen renders before heavy processing
-        await new Promise(resolve => setTimeout(resolve, 50)); 
+        await new Promise(resolve => setTimeout(resolve, 50));
 
         otkViewer.innerHTML = ''; // Clear previous content
 
@@ -967,7 +970,7 @@
             otkViewer.textContent = 'No messages found to display.'; // User-friendly message
             consoleWarn(`No messages to render in viewer.`);
             updateLoadingProgress(100, "No messages to display.");
-            setTimeout(hideLoadingScreen, 500); 
+            setTimeout(hideLoadingScreen, 500);
             return;
         }
 
@@ -976,7 +979,7 @@
         // No thread title header needed anymore for continuous view
 
         const messagesContainer = document.createElement('div');
-        messagesContainer.id = 'otk-messages-container'; 
+        messagesContainer.id = 'otk-messages-container';
         messagesContainer.style.cssText = `
             width: 100%; /* Fill parent (otkViewer's content box) */
             height: 100%; /* Fill parent */
@@ -1008,19 +1011,19 @@
             messageDiv.style.cssText = `
                 width: 90%; /* Adjusted width */
                 margin: 15px auto; /* Increased top/bottom margin for more gap */
-                padding: 10px; 
+                padding: 10px;
                 background-color: #FFFFFF; /* White for single messages */
                 color: #000000; /* Black text for message content - already set, confirmed */
-                border-radius: 5px; 
+                border-radius: 5px;
                 box-shadow: 0 1px 3px rgba(0,0,0,0.1);
             `;
 
             const messageHeader = document.createElement('div');
             messageHeader.style.cssText = `
-                font-size: 12px; 
+                font-size: 12px;
                 color: #000000; /* Black header text */
                 font-weight: bold; /* Make header bold */
-                margin-bottom: 8px; 
+                margin-bottom: 8px;
                 padding-bottom: 5px;
                 border-bottom: 1px solid #EEE; /* Light separator for header */
                 text-decoration: none; /* Ensure no underlines from potential parent links */
@@ -1035,7 +1038,7 @@
             messageDiv.appendChild(messageHeader);
 
             const textElement = document.createElement('div');
-            textElement.style.whiteSpace = 'pre-wrap'; 
+            textElement.style.whiteSpace = 'pre-wrap';
             textElement.textContent = message.text; // message.text is now pre-decoded
             messageDiv.appendChild(textElement);
 
@@ -1071,12 +1074,12 @@
                                     const extLower = message.attachment.ext.toLowerCase();
                                     if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) {
                                         mediaElement = document.createElement('img');
-                                        mediaElement.onload = () => URL.revokeObjectURL(objectURL); 
+                                        mediaElement.onload = () => URL.revokeObjectURL(objectURL);
                                         mediaElement.onerror = () => URL.revokeObjectURL(objectURL);
                                         mediaElement.src = objectURL;
                                     } else if (['.webm', '.mp4'].includes(extLower)) {
                                         mediaElement = document.createElement('video');
-                                        mediaElement.onloadeddata = () => URL.revokeObjectURL(objectURL); 
+                                        mediaElement.onloadeddata = () => URL.revokeObjectURL(objectURL);
                                         mediaElement.onerror = () => URL.revokeObjectURL(objectURL);
                                         mediaElement.src = objectURL;
                                         mediaElement.controls = true;
@@ -1099,7 +1102,7 @@
                             request.onerror = (event) => {
                                 consoleError(`Error fetching media ${message.attachment.localStoreId} from IndexedDB (post ${message.id}):`, event.target.error);
                                 attachmentDiv.appendChild(createThumbnailElement(message.attachment, boardForLink));
-                                resolveMedia(); 
+                                resolveMedia();
                             };
                         });
                         mediaLoadPromises.push(mediaPromise);
@@ -1109,18 +1112,18 @@
                         attachmentDiv.appendChild(createThumbnailElement(message.attachment, boardForLink));
                     }
                 } else {
-                    if (message.attachment && message.attachment.tim) { 
+                    if (message.attachment && message.attachment.tim) {
                         consoleLog(`Media for post ${message.id} not in local store or DB unavailable. Displaying thumbnail.`);
                         attachmentDiv.appendChild(createThumbnailElement(message.attachment, boardForLink));
                     }
                 }
-                if (attachmentDiv.hasChildNodes()) { 
+                if (attachmentDiv.hasChildNodes()) {
                     messageDiv.appendChild(attachmentDiv);
                 }
             }
             messagesContainer.appendChild(messageDiv);
             messagesProcessed++;
-            let currentProgress = (messagesProcessed / totalMessages) * 90; 
+            let currentProgress = (messagesProcessed / totalMessages) * 90;
             updateLoadingProgress(currentProgress, `Processing message ${messagesProcessed} of ${totalMessages}...`);
         }
         otkViewer.appendChild(messagesContainer);
@@ -1135,14 +1138,14 @@
                 // Reset lastViewerScrollTop after use if we only want it for the immediate next open.
                 // If we want it to persist across multiple toggles until a refresh, don't reset here.
                 // For now, let's not reset, allowing multiple toggles to the same spot.
-                // lastViewerScrollTop = 0; 
+                // lastViewerScrollTop = 0;
             } else {
                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
                 consoleLog('Scrolled messages to bottom (new content, refresh, or no prior scroll position).');
             }
-            
+
             updateLoadingProgress(100, "View ready!"); // Update text for 100%
-            setTimeout(hideLoadingScreen, 200); 
+            setTimeout(hideLoadingScreen, 200);
         }).catch(err => {
             consoleError("Error occurred during media loading promises:", err);
             updateLoadingProgress(100, "Error loading some media. View may be incomplete.");
@@ -1163,7 +1166,7 @@
         thumbImg.style.maxHeight = `${attachment.tn_h}px`;
         thumbImg.style.border = '1px solid #555';
         thumbImg.style.borderRadius = '3px';
-        
+
         thumbLink.appendChild(thumbImg);
         return thumbLink;
     }
@@ -1182,7 +1185,7 @@
                     let com = thread.com || '';
                     if ((title + com).toLowerCase().includes('otk')) {
                         foundThreads.push({
-                            id: Number(thread.no), 
+                            id: Number(thread.no),
                             title: title || `Thread ${thread.no}` // Ensure title exists
                         });
                     }
@@ -1192,7 +1195,7 @@
             return foundThreads;
         } catch (error) {
             consoleError('scanCatalog error:', error);
-            return []; 
+            return [];
         }
     }
 
@@ -1248,7 +1251,7 @@
                         filehash_db_key = `${post.tim}${post.ext}`;
                         consoleWarn(`MD5 hash not available or invalid for post ${post.no}, file ${post.filename}. Falling back to tim+ext for DB key: ${filehash_db_key}`);
                     }
-                    
+
                     message.attachment = {
                         filename: post.filename,
                         ext: post.ext,
@@ -1290,7 +1293,7 @@
                                     const blob = await mediaResponse.blob();
                                     const storeTransaction = otkMediaDB.transaction(['mediaStore'], 'readwrite');
                                     const mediaStore = storeTransaction.objectStore('mediaStore');
-                                    
+
                                     // Stored object's key property must match the store's keyPath ('filehash')
                                     const itemToStore = {
                                         filehash: filehash_db_key, // This is the keyPath value
@@ -1300,13 +1303,13 @@
                                         ext: post.ext, // Store ext for easier type identification for stats
                                         timestamp: Date.now()
                                     };
-                                    
+
                                     const putRequest = mediaStore.put(itemToStore);
                                     await new Promise((resolvePut, rejectPut) => {
                                         putRequest.onsuccess = () => {
                                             message.attachment.localStoreId = filehash_db_key; // localStoreId still refers to the value of the key
                                             consoleLog(`Stored media with key ${filehash_db_key} (post ${post.no}) in IndexedDB.`);
-                                            
+
                                             // Update local media counts
                                             const ext = post.ext.toLowerCase();
                                             if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
@@ -1365,8 +1368,8 @@
                 const isLive = foundIds.has(Number(threadId));
                 if (!isLive) {
                     consoleLog(`[BG] Removing thread ${threadId} (not in catalog).`);
-                    delete messagesByThreadId[threadId]; 
-                    delete threadColors[threadId];     
+                    delete messagesByThreadId[threadId];
+                    delete threadColors[threadId];
                 }
                 return isLive;
             });
@@ -1382,9 +1385,9 @@
             });
             consoleLog(`[BG] Active threads after catalog sync: ${activeThreads.length}`, activeThreads);
 
-            for (const threadId of [...activeThreads]) { 
+            for (const threadId of [...activeThreads]) {
                 consoleLog(`[BG] Fetching messages for thread ${threadId}...`);
-                let newMessages = await fetchThreadMessages(threadId); 
+                let newMessages = await fetchThreadMessages(threadId);
                 consoleLog(`[BG] Fetched ${newMessages.length} messages for thread ${threadId}.`);
 
                 if (newMessages.length > 0) {
@@ -1400,7 +1403,7 @@
                             // Optionally update existing message if needed, though 4chan posts are immutable mostly
                         }
                     });
-                    updatedMessages.sort((a, b) => a.time - b.time); 
+                    updatedMessages.sort((a, b) => a.time - b.time);
                     messagesByThreadId[threadId] = updatedMessages;
                      // Ensure OP's title is used for the thread if messagesByThreadId was empty
                     if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
@@ -1425,7 +1428,7 @@
             localStorage.setItem(COLORS_KEY, JSON.stringify(threadColors));
 
             consoleLog('[BG] Data saved. Dispatching otkMessagesUpdated event.');
-            window.dispatchEvent(new CustomEvent('otkMessagesUpdated')); 
+            window.dispatchEvent(new CustomEvent('otkMessagesUpdated'));
             renderThreadList();
             updateDisplayedStatistics();
             consoleLog('[BG] Background refresh complete.');
@@ -1465,7 +1468,7 @@
                 if (!previousActiveThreadIds.has(threadIdNum) && !activeThreads.includes(threadIdNum)) {
                     consoleLog(`[Manual] Adding new thread ${threadIdNum}.`);
                     activeThreads.push(threadIdNum);
-                    getThreadColor(threadIdNum); 
+                    getThreadColor(threadIdNum);
                 }
             });
             consoleLog(`[Manual] Active threads after catalog sync: ${activeThreads.length}`, activeThreads);
@@ -1478,9 +1481,9 @@
                 const baseProgress = 20; // After catalog scan
                 const loopProgress = totalThreadsToFetch > 0 ? (threadsFetched / totalThreadsToFetch) * 70 : 70; // 70% of progress for fetching
                 updateLoadingProgress(baseProgress + loopProgress, `Fetching thread ${threadsFetched} of ${totalThreadsToFetch} (${threadId})...`);
-                
+
                 consoleLog(`[Manual] Fetching messages for thread ${threadId}...`);
-                let newMessages = await fetchThreadMessages(threadId); 
+                let newMessages = await fetchThreadMessages(threadId);
                 consoleLog(`[Manual] Fetched ${newMessages.length} messages for thread ${threadId}.`);
 
                 if (newMessages.length > 0) {
@@ -1498,7 +1501,7 @@
                          messagesByThreadId[threadId][0].title = newMessages[0].title;
                     }
                 } else {
-                     if (activeThreads.includes(Number(threadId))) { 
+                     if (activeThreads.includes(Number(threadId))) {
                         consoleLog(`[Manual] No messages for active thread ${threadId}. Removing.`);
                         activeThreads = activeThreads.filter(id => id !== Number(threadId));
                         delete messagesByThreadId[threadId];
@@ -1537,7 +1540,7 @@
 
     async function clearAndRefresh() {
         consoleLog('[Clear] Clear and Refresh initiated...');
-        isManualRefreshInProgress = true; 
+        isManualRefreshInProgress = true;
         try {
             activeThreads = [];
             messagesByThreadId = {};
@@ -1570,15 +1573,15 @@
             }
 
             consoleLog('[Clear] Calling refreshThreadsAndMessages to repopulate...');
-            await refreshThreadsAndMessages(); 
+            await refreshThreadsAndMessages();
 
             consoleLog('[Clear] Dispatching otkClearViewerDisplay event.');
-            window.dispatchEvent(new CustomEvent('otkClearViewerDisplay')); 
+            window.dispatchEvent(new CustomEvent('otkClearViewerDisplay'));
             consoleLog('[Clear] Clear and Refresh complete.');
         } catch (error) {
             consoleError('[Clear] Error during clear and refresh:', error);
         } finally {
-            isManualRefreshInProgress = false; 
+            isManualRefreshInProgress = false;
             consoleLog('[Clear] Manual refresh flag reset.');
             // Re-render and update stats after clearing everything and initial fetch
             renderThreadList();
@@ -1600,19 +1603,19 @@
 
         otkViewer.style.cssText = `
             position: fixed;
-            top: 86px; 
+            top: 86px;
             left: 0;
             width: 100vw;
-            bottom: 0; 
+            bottom: 0;
             background-color: #FFF4DE; /* New background color */
             opacity: 1; /* Ensure full opacity */
-            z-index: 9998; 
+            z-index: 9998;
             /* overflow-y: auto; */ /* Removed: messagesContainer will handle scroll */
             box-sizing: border-box;
             color: #333333; /* Default text color for viewer */
             padding: 10px 0 10px 10px; /* Adjusted: No right padding on viewer itself */
-            border-top: 1px solid #DBDBDC; 
-            display: none; 
+            border-top: 1px solid #DBDBDC;
+            display: none;
         `;
         consoleLog("Applied basic styling to otkViewer: background #FFF4DE, default text color #333333, adjusted padding for scrollbar.");
     }
@@ -1620,8 +1623,8 @@
     function toggleViewer() {
         if (!otkViewer) {
             consoleWarn('Viewer element not found. Attempting to create.');
-            ensureViewerExists(); 
-            if (!otkViewer) { 
+            ensureViewerExists();
+            if (!otkViewer) {
                 consoleError('Viewer element could not be initialized.');
                 return;
             }
@@ -1635,12 +1638,12 @@
                 consoleLog(`Viewer closed. Scroll position saved: ${lastViewerScrollTop}`);
             }
             otkViewer.style.display = 'none';
-            document.body.style.overflow = 'auto'; 
+            document.body.style.overflow = 'auto';
             localStorage.setItem(VIEWER_OPEN_KEY, 'false');
             consoleLog('Viewer hidden state saved to localStorage.');
         } else {
             otkViewer.style.display = 'block';
-            document.body.style.overflow = 'hidden'; 
+            document.body.style.overflow = 'hidden';
             localStorage.setItem(VIEWER_OPEN_KEY, 'true');
             consoleLog('Viewer shown. State saved to localStorage. Rendering all messages.');
             renderMessagesInViewer({isToggleOpen: true}); // Pass flag
@@ -1694,20 +1697,20 @@
             `;
             button.onmouseover = () => button.style.backgroundColor = '#666';
             button.onmouseout = () => button.style.backgroundColor = '#555';
-            button.onmousedown = () => button.style.backgroundColor = '#444'; 
-            button.onmouseup = () => button.style.backgroundColor = '#666'; 
+            button.onmousedown = () => button.style.backgroundColor = '#444';
+            button.onmouseup = () => button.style.backgroundColor = '#666';
             return button;
         }
 
         const btnToggleViewer = createTrackerButton('Toggle Viewer', 'otk-toggle-viewer-btn');
         btnToggleViewer.addEventListener('click', toggleViewer);
-        buttonContainer.appendChild(btnToggleViewer);
+        // Appended to bottomRowContainer later
 
         const btnRefresh = createTrackerButton('Refresh Data', 'otk-refresh-data-btn');
         btnRefresh.addEventListener('click', async () => {
             consoleLog('[GUI] "Refresh Data" button clicked.');
             // sessionStorage.setItem('otkManualRefreshClicked', 'true'); // Not currently used elsewhere
-            btnRefresh.disabled = true; 
+            btnRefresh.disabled = true;
             // isManualRefreshInProgress is set within refreshThreadsAndMessages
             try {
                 await refreshThreadsAndMessages();
@@ -1716,18 +1719,31 @@
                 consoleError('[GUI] Error during data refresh:', error);
             } finally {
                 // isManualRefreshInProgress is reset within refreshThreadsAndMessages
-                btnRefresh.disabled = false; 
+                btnRefresh.disabled = false;
                 consoleLog('[GUI] Refresh operation finished.');
             }
         });
-        buttonContainer.appendChild(btnRefresh);
+        // Appended to bottomRowContainer later
+
+        // Create topRowContainer for the checkbox
+        const topRowContainer = document.createElement('div');
+        // No specific styles for topRowContainer itself yet, alignment is handled by otk-button-container
+
+        // Create bottomRowContainer for the buttons
+        const bottomRowContainer = document.createElement('div');
+        bottomRowContainer.style.cssText = `
+            display: flex;
+            flex-direction: row;
+            gap: 10px;
+            align-items: center;
+        `;
 
         const controlsWrapper = document.createElement('div');
         controlsWrapper.style.cssText = `
             display: flex;
             flex-direction: column;
-            justify-content: space-around; 
-            align-items: flex-start; 
+            justify-content: space-around;
+            align-items: flex-start;
             gap: 4px; /* Increased gap */
             height: auto; /* Allow it to size based on content */
         `;
@@ -1750,7 +1766,7 @@
 
         bgUpdateCheckboxContainer.appendChild(bgUpdateCheckbox);
         bgUpdateCheckboxContainer.appendChild(bgUpdateLabel);
-        controlsWrapper.appendChild(bgUpdateCheckboxContainer); 
+        controlsWrapper.appendChild(bgUpdateCheckboxContainer);
 
         const btnClearRefresh = createTrackerButton('Restart Tracker', 'otk-restart-tracker-btn');
         btnClearRefresh.style.alignSelf = 'center'; // Override parent's align-items:stretch to allow natural width & centering
@@ -1758,23 +1774,33 @@
 
         const thirdButtonColumn = document.createElement('div');
         thirdButtonColumn.style.cssText = `
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between; /* Pushes checkbox group to top, button to bottom */
-            align-items: stretch;           /* Children will stretch unless they override with align-self */
-            height: 100%;
-            min-width: 130px; /* Retaining this for now, can be removed if problematic */
+            display: flex;          /* It's a flex container for controlsWrapper */
+            flex-direction: column; /* Stack its children (controlsWrapper) */
+            justify-content: center;/* Center controlsWrapper vertically */
+            align-items: center;    /* Center controlsWrapper horizontally */
+            /* height: 100%; Removed, let it size by content */
+            /* min-width: 130px; Removed, let it size by content */
         `;
-        
+        // controlsWrapper has align-self: center and width: fit-content, which is good.
         // Ensure controlsWrapper takes appropriate width for its content (checkbox + label)
         // and centers itself within the stretched column.
-        controlsWrapper.style.width = 'fit-content'; 
-        controlsWrapper.style.alignSelf = 'center'; 
+        controlsWrapper.style.width = 'fit-content';
+        controlsWrapper.style.alignSelf = 'center';
 
-        thirdButtonColumn.appendChild(controlsWrapper); 
-        thirdButtonColumn.appendChild(btnClearRefresh); 
-        buttonContainer.appendChild(thirdButtonColumn);
+        thirdButtonColumn.appendChild(controlsWrapper);
+        // btnClearRefresh is handled below
+        // buttonContainer.appendChild(thirdButtonColumn); // This is now part of topRowContainer
 
+        // Append elements to their respective row containers
+        topRowContainer.appendChild(thirdButtonColumn);
+
+        bottomRowContainer.appendChild(btnToggleViewer);
+        bottomRowContainer.appendChild(btnRefresh);
+        bottomRowContainer.appendChild(btnClearRefresh);
+
+        // Append row containers to the main buttonContainer
+        buttonContainer.appendChild(topRowContainer);
+        buttonContainer.appendChild(bottomRowContainer);
 
         btnClearRefresh.addEventListener('click', async () => {
             consoleLog('[GUI] "Restart Thread Tracker" button clicked.');
@@ -1785,7 +1811,7 @@
             btnClearRefresh.disabled = true;
             // isManualRefreshInProgress will be handled by clearAndRefresh
             try {
-                await clearAndRefresh(); 
+                await clearAndRefresh();
                 consoleLog('[GUI] Clear and refresh sequence complete.');
             } catch (error) {
                 consoleError('[GUI] Error during clear and refresh sequence:', error);
@@ -1850,7 +1876,7 @@
         ensureViewerExists(); // Ensure viewer div is in DOM early
 
         try {
-            await initDB(); 
+            await initDB();
             consoleLog("IndexedDB initialization attempt complete.");
 
             // Recalculate and display initial media stats
