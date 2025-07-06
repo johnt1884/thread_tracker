@@ -997,7 +997,7 @@
             width: 100%; /* Fill parent (otkViewer's content box) */
             height: 100%; /* Fill parent */
             overflow-y: auto;
-            padding-right: 0; /* Scrollbar will use otkViewer's padding space */
+            padding-right: 20px; /* Adjusted for symmetrical content padding (target 35px effective) */
             box-sizing: border-box; /* Ensure padding is included in width/height */
         `;
         // Note: maxHeight was 'calc(100% - 20px)' before. Now using height 100% of otkViewer's content area.
@@ -1029,6 +1029,7 @@
                 color: #e6e6e6; /* New message body font color */
                 border-radius: 5px; 
                 box-shadow: 0 1px 3px rgba(0,0,0,0.1); /* Keep shadow or adjust if needed */
+                box-sizing: border-box; /* Ensure padding/border don't expand beyond 100% width */
             `;
 
             const messageHeader = document.createElement('div');
@@ -1059,6 +1060,7 @@
 
             const dateDisplaySpan = document.createElement('span');
             dateDisplaySpan.textContent = timestampParts.date;
+            dateDisplaySpan.style.paddingRight = '5px'; // Add padding for better alignment
 
             messageHeader.appendChild(leftSpan);
             messageHeader.appendChild(dateDisplaySpan);
@@ -1208,14 +1210,16 @@
 // After processing all messages, update global viewer counts
 consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHashes.size}`, uniqueImageViewerHashes);
 consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHashes.size}`, uniqueVideoViewerHashes);
-viewerActiveImageCount = uniqueImageViewerHashes.size;
-viewerActiveVideoCount = uniqueVideoViewerHashes.size;
-updateDisplayedStatistics(); // Refresh stats display
+// viewerActiveImageCount = uniqueImageViewerHashes.size; // MOVED TO AFTER PROMISES
+// viewerActiveVideoCount = uniqueVideoViewerHashes.size; // MOVED TO AFTER PROMISES
+// updateDisplayedStatistics(); // Refresh stats display -- MOVED TO AFTER PROMISES
 
         Promise.all(mediaLoadPromises).then(() => {
             consoleLog("All inline media load attempts complete.");
             updateLoadingProgress(95, "Finalizing view...");
-    // updateDisplayedStatistics(); // Already called, or call again if media loading changes counts, though current logic counts intent to display.
+    viewerActiveImageCount = uniqueImageViewerHashes.size; // MOVED HERE
+    viewerActiveVideoCount = uniqueVideoViewerHashes.size; // MOVED HERE
+    updateDisplayedStatistics(); // Update stats after all media processing is attempted.
 
             if (options.isToggleOpen && lastViewerScrollTop > 0) {
                 messagesContainer.scrollTop = lastViewerScrollTop;
@@ -1225,8 +1229,12 @@ updateDisplayedStatistics(); // Refresh stats display
                 // For now, let's not reset, allowing multiple toggles to the same spot.
                 // lastViewerScrollTop = 0; 
             } else {
-                messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                consoleLog('Scrolled messages to bottom (new content, refresh, or no prior scroll position).');
+                const scrollToBottom = () => {
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                    consoleLog('Attempted to scroll messages to bottom. Position:', messagesContainer.scrollTop, 'Height:', messagesContainer.scrollHeight);
+                };
+                setTimeout(scrollToBottom, 100); // Initial scroll attempt
+                setTimeout(scrollToBottom, 500); // Follow-up scroll attempt after more potential reflows
             }
             
             updateLoadingProgress(100, "View ready!"); // Update text for 100%
@@ -1698,7 +1706,7 @@ updateDisplayedStatistics(); // Refresh stats display
             /* overflow-y: auto; */ /* Removed: messagesContainer will handle scroll */
             box-sizing: border-box;
             color: #e6e6e6; /* New default text color for viewer */
-            padding: 10px 25px 10px 25px; /* Mirror otk-gui horizontal padding */
+            padding: 10px 5px 10px 25px; /* Mirror otk-gui horizontal padding, reduced right padding for scrollbar */
             border-top: 1px solid #FFD700; /* Match GUI divider */
             display: none;
             overflow-x: hidden; /* Prevent horizontal scrollbar on the viewer itself */
