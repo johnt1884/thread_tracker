@@ -29,6 +29,9 @@
     let isManualRefreshInProgress = false;
     const BACKGROUND_REFRESH_INTERVAL = 30000; // 30 seconds
     let lastViewerScrollTop = 0; // To store scroll position
+    let renderedMessageIdsInViewer = new Set(); // To track IDs in viewer for incremental updates
+    let uniqueImageViewerHashes = new Set(); // Global set for viewer's unique image hashes
+    let uniqueVideoViewerHashes = new Set(); // Global set for viewer's unique video hashes
 
     // IndexedDB instance
     let otkMediaDB = null;
@@ -63,17 +66,17 @@
             const overlay = document.createElement('div');
         overlay.id = 'otk-loading-overlay';
         overlay.style.cssText = `
-            position: fixed; 
+            position: fixed;
             top: 86px; /* Height of otkGuiWrapper (85px) + border (1px) */
-            left: 0; 
-            width: 100%; 
+            left: 0;
+            width: 100%;
             height: calc(100vh - 86px); /* Full viewport height minus GUI height */
             background-color: rgba(0,0,0,0.8); /* 80% opacity black */
             z-index: 100000; /* Ensure it's on top of everything, including viewer */
             display: none; /* Hidden by default */
-            flex-direction: column; 
-            align-items: center; 
-            justify-content: center; 
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
             font-family: Verdana, sans-serif;
             color: white;
         `;
@@ -86,11 +89,11 @@
         const progressBarContainer = document.createElement('div');
         progressBarContainer.id = 'otk-progress-bar-container';
         progressBarContainer.style.cssText = `
-            width: 60%; 
-            max-width: 400px; 
-            background-color: #333; 
-            border: 1px solid #555; 
-            border-radius: 5px; 
+            width: 60%;
+            max-width: 400px;
+            background-color: #333;
+            border: 1px solid #555;
+            border-radius: 5px;
             padding: 2px;
         `;
         overlay.appendChild(progressBarContainer);
@@ -98,14 +101,14 @@
         const progressBar = document.createElement('div');
         progressBar.id = 'otk-progress-bar';
         progressBar.style.cssText = `
-            width: 0%; 
-            height: 25px; 
-            background-color: #4CAF50; 
-            border-radius: 3px; 
-            text-align: center; 
-            line-height: 25px; 
-            color: white; 
-            font-weight: bold; 
+            width: 0%;
+            height: 25px;
+            background-color: #4CAF50;
+            border-radius: 3px;
+            text-align: center;
+            line-height: 25px;
+            color: white;
+            font-weight: bold;
             transition: width 0.3s ease;
         `;
         progressBarContainer.appendChild(progressBar);
@@ -193,12 +196,13 @@
     function getAllMessagesSorted() {
         let allMessages = [];
         for (const threadId in messagesByThreadId) {
-            if (activeThreads.includes(Number(threadId)) && messagesByThreadId.hasOwnProperty(threadId)) {
+            // Now includes messages from all threads for which we have data, not just active ones
+            if (messagesByThreadId.hasOwnProperty(threadId)) {
                 allMessages = allMessages.concat(messagesByThreadId[threadId]);
             }
         }
         allMessages.sort((a, b) => a.time - b.time); // Sort by timestamp ascending
-        consoleLog(`Collected and sorted ${allMessages.length} messages from ${activeThreads.length} active threads.`);
+        consoleLog(`Collected and sorted ${allMessages.length} messages from all locally stored threads.`);
         return allMessages;
     }
 
@@ -356,7 +360,7 @@
             text-align: center;
             padding: 0 10px;
         `;
-        centerInfoContainer.style.flexGrow = '1'; 
+        centerInfoContainer.style.flexGrow = '1';
         consoleLog('[GUI Setup - Initial] centerInfoContainer.style.flexGrow explicitly set to 1.');
 
         const otkThreadTitleDisplay = document.createElement('div');
@@ -371,9 +375,9 @@
         const otkStatsDisplay = document.createElement('div');
         otkStatsDisplay.id = 'otk-stats-display';
         otkStatsDisplay.style.cssText = `
-            font-size: 11px; 
-            display: flex; 
-            flex-direction: column; 
+            font-size: 11px;
+            display: flex;
+            flex-direction: column;
             align-items: center; /* This centers the span blocks */
             width: fit-content; /* Make block only as wide as its content */
             margin: 0 auto; /* Center the block itself if parent is wider */
@@ -495,9 +499,9 @@
             const otkStatsDisplay = document.createElement('div');
             otkStatsDisplay.id = 'otk-stats-display';
             otkStatsDisplay.style.cssText = `
-                font-size: 11px; 
-                display: flex; 
-                flex-direction: column; 
+                font-size: 11px;
+                display: flex;
+                flex-direction: column;
                 align-items: center; /* This centers the span blocks */
                 width: fit-content; /* Make block only as wide as its content */
                 margin: 0 auto; /* Center the block itself if parent is wider */
@@ -648,7 +652,7 @@
             let originalThreadUrl = `https://boards.4chan.org/b/thread/${threadId}`;
 
 
-            if (messages.length > 0 && messages[0]) { 
+            if (messages.length > 0 && messages[0]) {
                 title = messages[0].title ? decodeEntities(messages[0].title) : `Thread ${threadId}`;
                 firstMessageTime = messages[0].time;
             } else {
@@ -673,10 +677,10 @@
 
         threadsToDisplayInList.forEach((thread, index) => {
             const threadItemDiv = document.createElement('div');
-            let marginBottom = index < (threadsToDisplayInList.length -1) ? '0px' : '3px'; 
+            let marginBottom = index < (threadsToDisplayInList.length -1) ? '0px' : '3px';
             threadItemDiv.style.cssText = `
                 display: flex;
-                align-items: flex-start; 
+                align-items: flex-start;
                 padding: 4px;
                 border-radius: 3px;
                 margin-bottom: ${marginBottom};
@@ -690,7 +694,7 @@
                 border-radius: 2px;
                 margin-right: 6px;
                 flex-shrink: 0;
-                margin-top: 1px; 
+                margin-top: 1px;
             `;
             threadItemDiv.appendChild(colorBox);
 
@@ -701,17 +705,17 @@
 
             const titleLink = document.createElement('a');
             titleLink.href = thread.url;
-            titleLink.target = '_blank'; 
-            const fullTitle = thread.title; 
+            titleLink.target = '_blank';
+            const fullTitle = thread.title;
             titleLink.textContent = truncateTitleWithWordBoundary(fullTitle, 40); // Max length adjusted
-            titleLink.title = fullTitle; 
+            titleLink.title = fullTitle;
             let titleLinkStyle = `
                 color: #e0e0e0;
                 text-decoration: none;
                 font-weight: bold;
                 font-size: 12px;
-                margin-bottom: 2px; 
-                display: block; 
+                margin-bottom: 2px;
+                display: block;
                 /* width: 100%; */ /* Removed to allow natural width up to container */
                 white-space: nowrap;
                 overflow: hidden;
@@ -726,7 +730,7 @@
             let timestampSpanStyle = `
                 font-size: 10px;
                 color: #aaa;
-                margin-left: 5px; 
+                margin-left: 5px;
             `;
 
             titleLink.style.cssText = titleLinkStyle;
@@ -742,7 +746,7 @@
 
                 if (otkViewer && otkViewer.style.display === 'none') {
                     // toggleViewer will call renderMessagesInViewer
-                    toggleViewer(); 
+                    toggleViewer();
                 } else if (otkViewer) {
                     // If viewer is already open, ensure content is rendered (might be redundant if toggleViewer always renders)
                     // and then scroll. If renderMessagesInViewer is heavy, only call if needed.
@@ -755,7 +759,7 @@
                          renderMessagesInViewer(); // Render if it wasn't made visible by toggleViewer
                     }
                 }
-                
+
                 // Attempt to scroll to the message after a brief delay to allow rendering
                 setTimeout(() => {
                     const messagesContainer = document.getElementById('otk-messages-container');
@@ -766,7 +770,7 @@
                         // A more robust check might be needed if multiple messages could have data-message-id="${thread.id}"
                         // (e.g. if a post quotes the OP)
                         // For now, this assumes the first such element is the one we want, or it's unique enough.
-                        
+
                         if (opMessageElement) {
                             consoleLog(`Scrolling to message element for thread OP ${thread.id}.`);
                             opMessageElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -776,7 +780,7 @@
                         } else {
                             consoleWarn(`Could not find message element for thread OP ${thread.id} to scroll to.`);
                             // If not found, scroll to top as a fallback, or do nothing.
-                            // messagesContainer.scrollTop = 0; 
+                            // messagesContainer.scrollTop = 0;
                         }
                     }
                 }, 100); // Delay to allow render. May need adjustment.
@@ -784,7 +788,7 @@
 
             const titleTimeContainer = document.createElement('div');
             titleTimeContainer.style.display = 'flex';
-            titleTimeContainer.style.alignItems = 'baseline'; 
+            titleTimeContainer.style.alignItems = 'baseline';
             titleTimeContainer.appendChild(titleLink);
             titleTimeContainer.appendChild(timestampSpan);
 
@@ -798,8 +802,8 @@
             const numberOfAdditionalThreads = threadDisplayObjects.length - 3;
             const hoverContainer = document.createElement('div');
             hoverContainer.style.cssText = `
-                display: inline-block; 
-                position: relative; 
+                display: inline-block;
+                position: relative;
             `;
             const moreIndicator = document.createElement('div');
             moreIndicator.id = 'otk-more-threads-indicator';
@@ -809,17 +813,17 @@
                 color: #ccc;
                 font-style: italic;
                 cursor: pointer;
-                padding: 3px 6px; 
-                margin-left: 8px; 
-                display: inline; 
+                padding: 3px 6px;
+                margin-left: 8px;
+                display: inline;
             `;
             hoverContainer.appendChild(moreIndicator);
 
             if (threadsToDisplayInList.length > 0) {
-                const lastThreadItemDiv = threadDisplayContainer.lastChild; 
-                const textContentDiv = lastThreadItemDiv?.children[1]; 
-                const titleTimeContainer = textContentDiv?.firstChild; 
-                const timestampSpan = titleTimeContainer?.querySelector('span'); 
+                const lastThreadItemDiv = threadDisplayContainer.lastChild;
+                const textContentDiv = lastThreadItemDiv?.children[1];
+                const titleTimeContainer = textContentDiv?.firstChild;
+                const timestampSpan = titleTimeContainer?.querySelector('span');
 
                 if (timestampSpan && timestampSpan.parentNode === titleTimeContainer) {
                     timestampSpan.parentNode.insertBefore(hoverContainer, timestampSpan.nextSibling);
@@ -833,9 +837,9 @@
                     threadDisplayContainer.appendChild(hoverContainer);
                     consoleWarn('Last thread item structure not found for (+n), appended to thread display container.');
                 }
-            } else { 
-                moreIndicator.style.marginLeft = '0px'; 
-                moreIndicator.style.paddingLeft = '22px'; 
+            } else {
+                moreIndicator.style.marginLeft = '0px';
+                moreIndicator.style.paddingLeft = '22px';
                 threadDisplayContainer.appendChild(hoverContainer);
             }
 
@@ -846,7 +850,7 @@
             hoverContainer.addEventListener('mouseenter', () => {
                 consoleLog('hoverContainer mouseenter: showing tooltip');
                 moreIndicator.style.textDecoration = 'underline';
-                if (tooltip) { 
+                if (tooltip) {
                     consoleLog('Removing existing tooltip before creating new one');
                     tooltip.remove();
                 }
@@ -864,7 +868,7 @@
                     font-size: 12px;
                     max-width: 280px; /* Slightly narrower */
                     box-shadow: 0 3px 8px rgba(0,0,0,0.6);
-                    pointer-events: auto; 
+                    pointer-events: auto;
                     display: block;
                     opacity: 1;
                     /* border: 1px solid red; */ /* For debugging visibility */
@@ -878,7 +882,7 @@
                     tooltipLink.textContent = truncateTitleWithWordBoundary(thread.title, 40); // Truncate here too
                     tooltipLink.title = thread.title; // Full title on hover
                     tooltipLink.style.cssText = `
-                        display: block; 
+                        display: block;
                         color: #cccccc; /* Adjusted for new background */
                         text-decoration: none;
                         padding: 3px 0; /* More spacing */
@@ -886,26 +890,26 @@
                         overflow: hidden;
                         text-overflow: ellipsis;
                     `;
-                    tooltipLink.onmouseover = () => { tooltipLink.style.color = '#e6e6e6'; tooltipLink.style.textDecoration = 'underline';}; 
+                    tooltipLink.onmouseover = () => { tooltipLink.style.color = '#e6e6e6'; tooltipLink.style.textDecoration = 'underline';};
                     tooltipLink.onmouseout = () => { tooltipLink.style.color = '#cccccc'; tooltipLink.style.textDecoration = 'none';};
                     tooltip.appendChild(tooltipLink);
                 });
 
-                document.body.appendChild(tooltip); 
+                document.body.appendChild(tooltip);
                 consoleLog('Tooltip appended to body');
 
                 const indicatorRect = moreIndicator.getBoundingClientRect();
-                const tooltipRect = tooltip.getBoundingClientRect(); 
+                const tooltipRect = tooltip.getBoundingClientRect();
 
                 let leftPos = indicatorRect.left;
                 let topPos = indicatorRect.bottom + window.scrollY + 3; // Slightly more offset
 
                 if (leftPos + tooltipRect.width > window.innerWidth - 10) { // 10px buffer
-                    leftPos = window.innerWidth - tooltipRect.width - 10; 
+                    leftPos = window.innerWidth - tooltipRect.width - 10;
                 }
                 if (topPos + tooltipRect.height > window.innerHeight + window.scrollY - 10) {
                     consoleLog('Adjusting tooltip position to above indicator due to bottom overflow');
-                    topPos = indicatorRect.top + window.scrollY - tooltipRect.height - 3; 
+                    topPos = indicatorRect.top + window.scrollY - tooltipRect.height - 3;
                 }
                  if (leftPos < 10) leftPos = 10; // Prevent going off left edge
 
@@ -927,7 +931,7 @@
                             tooltip.remove();
                             tooltip = null;
                         }
-                    }, 300); 
+                    }, 300);
                 });
             });
 
@@ -940,7 +944,7 @@
                         tooltip.remove();
                         tooltip = null;
                     }
-                }, 300); 
+                }, 300);
             });
         }
     }
@@ -969,12 +973,17 @@
         const loadingText = options.isToggleOpen ? "Restoring view..." : "Loading all messages...";
         showLoadingScreen(loadingText);
 
-        // Initialize sets for unique media hashes in the current view
-        const uniqueImageViewerHashes = new Set();
-        const uniqueVideoViewerHashes = new Set();
-        
+        // Global sets uniqueImageViewerHashes and uniqueVideoViewerHashes are used directly.
+        // No local const declarations needed here.
+
         // Use a slight delay to ensure the loading screen renders before heavy processing
-        await new Promise(resolve => setTimeout(resolve, 50)); 
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        // Clear state for full rebuild (using global sets)
+        renderedMessageIdsInViewer.clear();
+        uniqueImageViewerHashes.clear(); // Now clearing the global set
+        uniqueVideoViewerHashes.clear(); // Now clearing the global set
+        consoleLog("[renderMessagesInViewer] Cleared renderedMessageIdsInViewer and global unique media hashes for full rebuild.");
 
         otkViewer.innerHTML = ''; // Clear previous content
 
@@ -983,7 +992,7 @@
             otkViewer.textContent = 'No messages found to display.'; // User-friendly message
             consoleWarn(`No messages to render in viewer.`);
             updateLoadingProgress(100, "No messages to display.");
-            setTimeout(hideLoadingScreen, 500); 
+            setTimeout(hideLoadingScreen, 500);
             return;
         }
 
@@ -992,7 +1001,7 @@
         // No thread title header needed anymore for continuous view
 
         const messagesContainer = document.createElement('div');
-        messagesContainer.id = 'otk-messages-container'; 
+        messagesContainer.id = 'otk-messages-container';
         messagesContainer.style.cssText = `
             width: 100%; /* Fill parent (otkViewer's content box) */
             height: 100%; /* Fill parent */
@@ -1009,200 +1018,17 @@
 
         for (let i = 0; i < totalMessages; i++) {
             const message = allMessages[i];
-            const messageDiv = document.createElement('div');
-            // Add data attributes for easier targeting by jump-to-message
-            messageDiv.setAttribute('data-message-id', message.id);
-            // To find the OP of a thread, we'd also need the thread ID.
-            // Assuming message.title contains the OP's title, and if it's unique enough, or if message.id matches threadId for OPs.
-            // For now, just message.id. The OP of a thread usually has post.no === thread.no.
-            // We can add `data-thread-id` if we pass the original threadId into the message object during fetch.
-            // For now, let's assume message.originalThreadId (if we add it) or message.title can help identify an OP.
-            // Let's assume `message.title` is the thread's subject, so if `message.text` starts with it, it's likely an OP.
-            // This needs a more robust way to identify OPs if `message.id` isn't always the thread ID for OPs.
-            // For now, the jump-to logic will need to be smart about this.
+            renderedMessageIdsInViewer.add(message.id); // Track that this ID is being rendered
 
-            messageDiv.style.cssText = `
-                width: 100%; /* Fill the padded parent (messagesContainer) */
-                margin: 15px 0; /* Vertical margin, no horizontal auto margin */
-                padding: 10px; 
-                background-color: #343434; /* New message body background */
-                color: #e6e6e6; /* New message body font color */
-                border-radius: 5px; 
-                box-shadow: 0 1px 3px rgba(0,0,0,0.1); /* Keep shadow or adjust if needed */
-                box-sizing: border-box; /* Ensure padding/border don't expand beyond 100% width */
-            `;
+            // Determine boardForLink for this message
+            const boardForLink = message.board || 'b'; // Fallback, ensure message object has 'board' if possible
 
-            const messageHeader = document.createElement('div');
-            messageHeader.style.cssText = `
-                font-size: 12px; 
-                color: #e6e6e6; /* New header text color */
-                font-weight: bold; /* Make header bold */
-                margin-bottom: 8px; 
-                padding-bottom: 5px;
-                border-bottom: 1px solid #555; /* New separator for header */
-                display: flex;                 /* Use flexbox for layout */
-                justify-content: space-between; /* Space out No. and Timestamp */
-                align-items: center;           /* Vertically align items */
-                width: 100%;                   /* Ensure header spans full width of padded parent */
-            `;
+            // Use the helper function to create the message element
+            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink);
+            messagesContainer.appendChild(messageElement);
 
-            const timestampParts = formatTimestampForHeader(message.time);
-
-            const leftSpan = document.createElement('span');
-            const messageIdSpan = document.createElement('span');
-            messageIdSpan.textContent = `#${message.id}`;
-            const timeDisplaySpan = document.createElement('span');
-            timeDisplaySpan.textContent = timestampParts.time;
-            timeDisplaySpan.style.marginLeft = '8px'; // Add spacing
-
-            leftSpan.appendChild(messageIdSpan);
-            leftSpan.appendChild(timeDisplaySpan);
-
-            const dateDisplaySpan = document.createElement('span');
-            dateDisplaySpan.textContent = timestampParts.date;
-            dateDisplaySpan.style.paddingRight = '5px'; // Add padding for better alignment
-
-            messageHeader.appendChild(leftSpan);
-            messageHeader.appendChild(dateDisplaySpan);
-            messageDiv.appendChild(messageHeader);
-
-            const textElement = document.createElement('div');
-            textElement.style.whiteSpace = 'pre-wrap'; 
-            textElement.textContent = message.text; // message.text is now pre-decoded
-            messageDiv.appendChild(textElement);
-
-            if (message.attachment && message.attachment.tim) {
-                const attachmentDiv = document.createElement('div');
-                attachmentDiv.style.marginTop = '10px';
-
-                const filenameLink = document.createElement('a');
-                filenameLink.textContent = `${message.attachment.filename} (${message.attachment.ext.substring(1)})`;
-                // Finding the original board for the link:
-                // This requires messages to store their original board or threadId,
-                // and then look up that thread's OP for the board.
-                // For now, assuming 'b' or using a placeholder if not easily available.
-                // Let's assume `message.board` is populated in fetchThreadMessages from `opPost.board`.
-                const boardForLink = message.board || 'b'; // Fallback
-                filenameLink.href = `https://i.4cdn.org/${boardForLink}/${message.attachment.tim}${message.attachment.ext}`;
-                filenameLink.target = "_blank";
-                filenameLink.style.cssText = "color: #60a5fa; display: block; margin-bottom: 5px; text-decoration: underline;"; // Light blue for dark background
-                attachmentDiv.appendChild(filenameLink);
-
-                if (message.attachment.localStoreId && otkMediaDB) {
-                    try {
-                        const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                        const store = transaction.objectStore('mediaStore');
-                        const request = store.get(message.attachment.localStoreId);
-
-                        const mediaPromise = new Promise((resolveMedia) => {
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob) {
-                                    const objectURL = URL.createObjectURL(storedItem.blob);
-                                    let mediaElement;
-                                    const extLower = message.attachment.ext.toLowerCase();
-                                    if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) {
-                                        mediaElement = document.createElement('img');
-                                        mediaElement.onload = () => URL.revokeObjectURL(objectURL); 
-                                        mediaElement.onerror = () => URL.revokeObjectURL(objectURL);
-                                        mediaElement.src = objectURL;
-                            if (message.attachment.filehash_db_key) {
-                                uniqueImageViewerHashes.add(message.attachment.filehash_db_key);
-                                consoleLog(`[StatsDebug] Added image hash (from DB load): ${message.attachment.filehash_db_key}`);
-                            }
-                                    } else if (['.webm', '.mp4'].includes(extLower)) {
-                                        mediaElement = document.createElement('video');
-                                        mediaElement.onloadeddata = () => URL.revokeObjectURL(objectURL); 
-                                        mediaElement.onerror = () => URL.revokeObjectURL(objectURL);
-                                        mediaElement.src = objectURL;
-                                        mediaElement.controls = true;
-                            if (message.attachment.filehash_db_key) {
-                                uniqueVideoViewerHashes.add(message.attachment.filehash_db_key);
-                                consoleLog(`[StatsDebug] Added video hash (from DB load): ${message.attachment.filehash_db_key}`);
-                            }
-                                    }
-
-                                    if (mediaElement) {
-                                        mediaElement.style.maxWidth = '100%';
-                                        mediaElement.style.maxHeight = '400px'; // Consistent max height
-                                        mediaElement.style.borderRadius = '3px';
-                                        mediaElement.style.display = 'block'; // Ensure it takes block space
-                                        attachmentDiv.appendChild(mediaElement);
-                                    }
-                                    consoleLog(`Media for post ${message.id} (key: ${message.attachment.localStoreId}) loaded from IndexedDB.`);
-                                } else {
-                                    consoleWarn(`Blob not found in IndexedDB for filehash ${message.attachment.localStoreId} (post ${message.id}). Displaying thumbnail.`);
-                                    attachmentDiv.appendChild(createThumbnailElement(message.attachment, boardForLink));
-                        // Add to set even if only thumbnail is shown, if it's considered "media in viewer"
-                        if (message.attachment.filehash_db_key) {
-                            const extLowerThumb = message.attachment.ext.toLowerCase();
-                            if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLowerThumb)) {
-                                uniqueImageViewerHashes.add(message.attachment.filehash_db_key);
-                                consoleLog(`[StatsDebug] Added image hash (DB blob not found): ${message.attachment.filehash_db_key}`);
-                            } else if (['.webm', '.mp4'].includes(extLowerThumb)) {
-                                uniqueVideoViewerHashes.add(message.attachment.filehash_db_key);
-                                consoleLog(`[StatsDebug] Added video hash (DB blob not found): ${message.attachment.filehash_db_key}`);
-                            }
-                        }
-                                }
-                                resolveMedia();
-                            };
-                            request.onerror = (event) => {
-                                consoleError(`Error fetching media ${message.attachment.localStoreId} from IndexedDB (post ${message.id}):`, event.target.error);
-                                attachmentDiv.appendChild(createThumbnailElement(message.attachment, boardForLink));
-                    // Add to set even if only thumbnail is shown
-                     if (message.attachment.filehash_db_key) {
-                        const extLowerThumbErr = message.attachment.ext.toLowerCase();
-                        if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLowerThumbErr)) {
-                            uniqueImageViewerHashes.add(message.attachment.filehash_db_key);
-                            consoleLog(`[StatsDebug] Added image hash (DB error): ${message.attachment.filehash_db_key}`);
-                        } else if (['.webm', '.mp4'].includes(extLowerThumbErr)) {
-                            uniqueVideoViewerHashes.add(message.attachment.filehash_db_key);
-                            consoleLog(`[StatsDebug] Added video hash (DB error): ${message.attachment.filehash_db_key}`);
-                        }
-                    }
-                                resolveMedia(); 
-                            };
-                        });
-                        mediaLoadPromises.push(mediaPromise);
-
-                    } catch (e) {
-                        consoleError(`Exception accessing IndexedDB for media (post ${message.id}):`, e);
-                        attachmentDiv.appendChild(createThumbnailElement(message.attachment, boardForLink));
-            // Add to set even if only thumbnail is shown
-            if (message.attachment && message.attachment.filehash_db_key) {
-                const extLowerCatch = message.attachment.ext.toLowerCase();
-                if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLowerCatch)) {
-                    uniqueImageViewerHashes.add(message.attachment.filehash_db_key);
-                    consoleLog(`[StatsDebug] Added image hash (DB exception): ${message.attachment.filehash_db_key}`);
-                } else if (['.webm', '.mp4'].includes(extLowerCatch)) {
-                    uniqueVideoViewerHashes.add(message.attachment.filehash_db_key);
-                    consoleLog(`[StatsDebug] Added video hash (DB exception): ${message.attachment.filehash_db_key}`);
-                }
-            }
-                    }
-                } else {
-        // This case is for when media is not in IndexedDB (e.g. only thumbnail is shown from 4cdn)
-        if (message.attachment && message.attachment.tim && message.attachment.filehash_db_key) {
-            consoleLog(`Media for post ${message.id} not in local store or DB unavailable. Displaying thumbnail. Adding to viewer stats.`);
-                        attachmentDiv.appendChild(createThumbnailElement(message.attachment, boardForLink));
-            const extLowerNoDb = message.attachment.ext.toLowerCase();
-            if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLowerNoDb)) {
-                uniqueImageViewerHashes.add(message.attachment.filehash_db_key);
-                consoleLog(`[StatsDebug] Added image hash (no DB, web thumb): ${message.attachment.filehash_db_key}`);
-            } else if (['.webm', '.mp4'].includes(extLowerNoDb)) {
-                uniqueVideoViewerHashes.add(message.attachment.filehash_db_key);
-                consoleLog(`[StatsDebug] Added video hash (no DB, web thumb): ${message.attachment.filehash_db_key}`);
-            }
-                    }
-                }
-                if (attachmentDiv.hasChildNodes()) { 
-                    messageDiv.appendChild(attachmentDiv);
-                }
-            }
-            messagesContainer.appendChild(messageDiv);
             messagesProcessed++;
-            let currentProgress = (messagesProcessed / totalMessages) * 90; 
+            let currentProgress = (messagesProcessed / totalMessages) * 90;
             updateLoadingProgress(currentProgress, `Processing message ${messagesProcessed} of ${totalMessages}...`);
         }
         otkViewer.appendChild(messagesContainer);
@@ -1227,7 +1053,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                 // Reset lastViewerScrollTop after use if we only want it for the immediate next open.
                 // If we want it to persist across multiple toggles until a refresh, don't reset here.
                 // For now, let's not reset, allowing multiple toggles to the same spot.
-                // lastViewerScrollTop = 0; 
+                // lastViewerScrollTop = 0;
             } else {
                 const scrollToBottom = () => {
                     messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -1236,9 +1062,9 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                 setTimeout(scrollToBottom, 100); // Initial scroll attempt
                 setTimeout(scrollToBottom, 500); // Follow-up scroll attempt after more potential reflows
             }
-            
+
             updateLoadingProgress(100, "View ready!"); // Update text for 100%
-            setTimeout(hideLoadingScreen, 200); 
+            setTimeout(hideLoadingScreen, 200);
         }).catch(err => {
             consoleError("Error occurred during media loading promises:", err);
             updateLoadingProgress(100, "Error loading some media. View may be incomplete.");
@@ -1246,6 +1072,242 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
             setTimeout(hideLoadingScreen, 500);
         });
     }
+
+    function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink) {
+        const messageDiv = document.createElement('div');
+        // Add data attributes for easier targeting by jump-to-message
+        messageDiv.setAttribute('data-message-id', message.id);
+
+        messageDiv.style.cssText = `
+            width: 100%; /* Fill the padded parent (messagesContainer) */
+            margin: 15px 0; /* Vertical margin, no horizontal auto margin */
+            padding: 10px;
+            background-color: #343434; /* New message body background */
+            color: #e6e6e6; /* New message body font color */
+            border-radius: 5px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1); /* Keep shadow or adjust if needed */
+            box-sizing: border-box; /* Ensure padding/border don't expand beyond 100% width */
+        `;
+
+        const messageHeader = document.createElement('div');
+        messageHeader.style.cssText = `
+            font-size: 12px;
+            color: #e6e6e6; /* New header text color */
+            font-weight: bold; /* Make header bold */
+            margin-bottom: 8px;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #555; /* New separator for header */
+            display: flex;                 /* Use flexbox for layout */
+            justify-content: space-between; /* Space out No. and Timestamp */
+            align-items: center;           /* Vertically align items */
+            width: 100%;                   /* Ensure header spans full width of padded parent */
+        `;
+
+        const timestampParts = formatTimestampForHeader(message.time);
+
+        const leftSpan = document.createElement('span');
+        const messageIdSpan = document.createElement('span');
+        messageIdSpan.textContent = `#${message.id}`;
+        const timeDisplaySpan = document.createElement('span');
+        timeDisplaySpan.textContent = timestampParts.time;
+        timeDisplaySpan.style.marginLeft = '8px'; // Add spacing
+
+        leftSpan.appendChild(messageIdSpan);
+        leftSpan.appendChild(timeDisplaySpan);
+
+        const dateDisplaySpan = document.createElement('span');
+        dateDisplaySpan.textContent = timestampParts.date;
+        dateDisplaySpan.style.paddingRight = '5px'; // Add padding for better alignment
+
+        messageHeader.appendChild(leftSpan);
+        messageHeader.appendChild(dateDisplaySpan);
+        messageDiv.appendChild(messageHeader);
+
+        const textElement = document.createElement('div');
+        textElement.style.whiteSpace = 'pre-wrap';
+        textElement.textContent = message.text; // message.text is now pre-decoded
+        messageDiv.appendChild(textElement);
+
+        if (message.attachment && message.attachment.tim) {
+            const attachmentDiv = document.createElement('div');
+            attachmentDiv.style.marginTop = '10px';
+
+            const filenameLink = document.createElement('a');
+            filenameLink.textContent = `${message.attachment.filename} (${message.attachment.ext.substring(1)})`;
+            const actualBoardForLink = boardForLink || message.board || 'b'; // Use passed boardForLink, fallback to message.board or 'b'
+            filenameLink.href = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
+            filenameLink.target = "_blank";
+            filenameLink.style.cssText = "color: #60a5fa; display: block; margin-bottom: 5px; text-decoration: underline;";
+            attachmentDiv.appendChild(filenameLink);
+
+            if (message.attachment.localStoreId && otkMediaDB) {
+                try {
+                    const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
+                    const store = transaction.objectStore('mediaStore');
+                    const request = store.get(message.attachment.localStoreId);
+
+                    const mediaPromise = new Promise((resolveMedia) => {
+                        request.onsuccess = (event) => {
+                            const storedItem = event.target.result;
+                            if (storedItem && storedItem.blob) {
+                                const objectURL = URL.createObjectURL(storedItem.blob);
+                                let mediaElement;
+                                const extLower = message.attachment.ext.toLowerCase();
+                                if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) {
+                                    mediaElement = document.createElement('img');
+                                    mediaElement.onload = () => URL.revokeObjectURL(objectURL);
+                                    mediaElement.onerror = () => URL.revokeObjectURL(objectURL);
+                                    mediaElement.src = objectURL;
+                                    if (message.attachment.filehash_db_key) {
+                                        uniqueImageViewerHashes.add(message.attachment.filehash_db_key);
+                                    }
+                                } else if (['.webm', '.mp4'].includes(extLower)) {
+                                    mediaElement = document.createElement('video');
+                                    mediaElement.onloadeddata = () => URL.revokeObjectURL(objectURL);
+                                    mediaElement.onerror = () => URL.revokeObjectURL(objectURL);
+                                    mediaElement.src = objectURL;
+                                    mediaElement.controls = true;
+                                    if (message.attachment.filehash_db_key) {
+                                        uniqueVideoViewerHashes.add(message.attachment.filehash_db_key);
+                                    }
+                                }
+
+                                if (mediaElement) {
+                                    mediaElement.style.maxWidth = '100%';
+                                    mediaElement.style.maxHeight = '400px';
+                                    mediaElement.style.borderRadius = '3px';
+                                    mediaElement.style.display = 'block';
+                                    attachmentDiv.appendChild(mediaElement);
+                                }
+                                consoleLog(`Media for post ${message.id} (key: ${message.attachment.localStoreId}) loaded from IndexedDB into helper.`);
+                            } else {
+                                consoleWarn(`Blob not found in IndexedDB for filehash ${message.attachment.localStoreId} (post ${message.id}). Displaying thumbnail.`);
+                                attachmentDiv.appendChild(createThumbnailElement(message.attachment, actualBoardForLink));
+                                if (message.attachment.filehash_db_key) {
+                                    const extLowerThumb = message.attachment.ext.toLowerCase();
+                                    if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLowerThumb)) {
+                                        uniqueImageViewerHashes.add(message.attachment.filehash_db_key);
+                                    } else if (['.webm', '.mp4'].includes(extLowerThumb)) {
+                                        uniqueVideoViewerHashes.add(message.attachment.filehash_db_key);
+                                    }
+                                }
+                            }
+                            resolveMedia();
+                        };
+                        request.onerror = (event) => {
+                            consoleError(`Error fetching media ${message.attachment.localStoreId} from IndexedDB (post ${message.id}) in helper:`, event.target.error);
+                            attachmentDiv.appendChild(createThumbnailElement(message.attachment, actualBoardForLink));
+                            if (message.attachment.filehash_db_key) {
+                                const extLowerThumbErr = message.attachment.ext.toLowerCase();
+                                if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLowerThumbErr)) {
+                                    uniqueImageViewerHashes.add(message.attachment.filehash_db_key);
+                                } else if (['.webm', '.mp4'].includes(extLowerThumbErr)) {
+                                    uniqueVideoViewerHashes.add(message.attachment.filehash_db_key);
+                                }
+                            }
+                            resolveMedia();
+                        };
+                    });
+                    mediaLoadPromises.push(mediaPromise);
+
+                } catch (e) {
+                    consoleError(`Exception accessing IndexedDB for media (post ${message.id}) in helper:`, e);
+                    attachmentDiv.appendChild(createThumbnailElement(message.attachment, actualBoardForLink));
+                    if (message.attachment && message.attachment.filehash_db_key) {
+                        const extLowerCatch = message.attachment.ext.toLowerCase();
+                        if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLowerCatch)) {
+                            uniqueImageViewerHashes.add(message.attachment.filehash_db_key);
+                        } else if (['.webm', '.mp4'].includes(extLowerCatch)) {
+                            uniqueVideoViewerHashes.add(message.attachment.filehash_db_key);
+                        }
+                    }
+                }
+            } else {
+                if (message.attachment && message.attachment.tim && message.attachment.filehash_db_key) {
+                    consoleLog(`Media for post ${message.id} not in local store or DB unavailable (helper). Displaying thumbnail. Adding to viewer stats.`);
+                    attachmentDiv.appendChild(createThumbnailElement(message.attachment, actualBoardForLink));
+                    const extLowerNoDb = message.attachment.ext.toLowerCase();
+                    if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLowerNoDb)) {
+                        uniqueImageViewerHashes.add(message.attachment.filehash_db_key);
+                    } else if (['.webm', '.mp4'].includes(extLowerNoDb)) {
+                        uniqueVideoViewerHashes.add(message.attachment.filehash_db_key);
+                    }
+                }
+            }
+            if (attachmentDiv.hasChildNodes()) {
+                messageDiv.appendChild(attachmentDiv);
+            }
+        }
+        return messageDiv;
+    }
+
+    // Signature simplified: scroll-related parameters removed
+    async function appendNewMessagesToViewer(newMessages) {
+        consoleLog(`[appendNewMessagesToViewer] Called with ${newMessages.length} new messages.`);
+        const messagesContainer = document.getElementById('otk-messages-container');
+        if (!messagesContainer) {
+            consoleError("[appendNewMessagesToViewer] messagesContainer not found. Aborting append.");
+            // Potentially hide loading screen if it was shown by refreshThreadsAndMessages
+            hideLoadingScreen();
+            return;
+        }
+
+        // oldScrollHeight is no longer passed directly, but we might need to know if user *was* at bottom.
+        // This check can be done in refreshThreadsAndMessages or approximated.
+        // For now, referenceElement approach will dominate if a reference is found.
+
+        if (messagesContainer.children.length > 0 && newMessages.length > 0) {
+            const separatorDiv = document.createElement('div');
+            separatorDiv.style.cssText = `
+                border-top: 2px dashed #FFD700;
+                margin: 20px 0;
+                padding-top: 10px;
+                text-align: center;
+                color: #FFD700;
+                font-size: 12px;
+                font-style: italic;
+            `;
+            const now = new Date();
+            const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            separatorDiv.textContent = `--- New messages below loaded at ${timeString} ---`;
+            messagesContainer.appendChild(separatorDiv);
+            consoleLog("[appendNewMessagesToViewer] Appended separator line.");
+        }
+
+        const mediaLoadPromises = [];
+        for (const message of newMessages) {
+            const boardForLink = message.board || 'b';
+            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink);
+            messagesContainer.appendChild(messageElement);
+            renderedMessageIdsInViewer.add(message.id);
+            consoleLog(`[appendNewMessagesToViewer] Appended message ${message.id}.`);
+        }
+
+        consoleLog(`[appendNewMessagesToViewer] Appended ${newMessages.length} elements. Waiting for media promises.`);
+
+        Promise.all(mediaLoadPromises).then(async () => { // Make async to use await for setTimeout promise
+            consoleLog("[appendNewMessagesToViewer] Media promises resolved.");
+
+            hideLoadingScreen(); // Hide loading screen first
+            await new Promise(resolve => setTimeout(resolve, 50)); // Brief pause for DOM to settle after hiding overlay
+
+            // Scroll adjustment logic is removed. The browser will maintain the current scroll position
+            // relative to the existing content. If new content is added at the bottom, the user
+            // will need to scroll down to see it if they weren't already at the bottom.
+            consoleLog("[appendNewMessagesToViewer] Scroll position intentionally not adjusted after append.");
+
+            viewerActiveImageCount = uniqueImageViewerHashes.size;
+            viewerActiveVideoCount = uniqueVideoViewerHashes.size;
+            updateDisplayedStatistics();
+            consoleLog("[appendNewMessagesToViewer] Stats updated.");
+
+        }).catch(async err => { // Make async
+            consoleError("[appendNewMessagesToViewer] Error in media promises:", err);
+            hideLoadingScreen(); // Ensure loading screen is hidden on error too
+            // No scroll adjustment on error either with the new approach.
+        });
+    }
+
 
     function createThumbnailElement(attachment, board) {
         const thumbLink = document.createElement('a');
@@ -1259,7 +1321,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
         thumbImg.style.maxHeight = `${attachment.tn_h}px`;
         thumbImg.style.border = '1px solid #555';
         thumbImg.style.borderRadius = '3px';
-        
+
         thumbLink.appendChild(thumbImg);
         return thumbLink;
     }
@@ -1278,7 +1340,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                     let com = thread.com || '';
                     if ((title + com).toLowerCase().includes('otk')) {
                         foundThreads.push({
-                            id: Number(thread.no), 
+                            id: Number(thread.no),
                             title: title || `Thread ${thread.no}` // Ensure title exists
                         });
                     }
@@ -1288,7 +1350,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
             return foundThreads;
         } catch (error) {
             consoleError('scanCatalog error:', error);
-            return []; 
+            return [];
         }
     }
 
@@ -1344,7 +1406,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                         filehash_db_key = `${post.tim}${post.ext}`;
                         consoleWarn(`MD5 hash not available or invalid for post ${post.no}, file ${post.filename}. Falling back to tim+ext for DB key: ${filehash_db_key}`);
                     }
-                    
+
                     message.attachment = {
                         filename: post.filename,
                         ext: post.ext,
@@ -1386,7 +1448,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                                     const blob = await mediaResponse.blob();
                                     const storeTransaction = otkMediaDB.transaction(['mediaStore'], 'readwrite');
                                     const mediaStore = storeTransaction.objectStore('mediaStore');
-                                    
+
                                     // Stored object's key property must match the store's keyPath ('filehash')
                                     const itemToStore = {
                                         filehash: filehash_db_key, // This is the keyPath value
@@ -1396,13 +1458,13 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                                         ext: post.ext, // Store ext for easier type identification for stats
                                         timestamp: Date.now()
                                     };
-                                    
+
                                     const putRequest = mediaStore.put(itemToStore);
                                     await new Promise((resolvePut, rejectPut) => {
                                         putRequest.onsuccess = () => {
                                             message.attachment.localStoreId = filehash_db_key; // localStoreId still refers to the value of the key
                                             consoleLog(`Stored media with key ${filehash_db_key} (post ${post.no}) in IndexedDB.`);
-                                            
+
                                             // Update local media counts
                                             const ext = post.ext.toLowerCase();
                                             if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
@@ -1461,8 +1523,8 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                 const isLive = foundIds.has(Number(threadId));
                 if (!isLive) {
                     consoleLog(`[BG] Removing thread ${threadId} (not in catalog).`);
-                    delete messagesByThreadId[threadId]; 
-                    delete threadColors[threadId];     
+                    delete messagesByThreadId[threadId];
+                    delete threadColors[threadId];
                 }
                 return isLive;
             });
@@ -1478,9 +1540,9 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
             });
             consoleLog(`[BG] Active threads after catalog sync: ${activeThreads.length}`, activeThreads);
 
-            for (const threadId of [...activeThreads]) { 
+            for (const threadId of [...activeThreads]) {
                 consoleLog(`[BG] Fetching messages for thread ${threadId}...`);
-                let newMessages = await fetchThreadMessages(threadId); 
+                let newMessages = await fetchThreadMessages(threadId);
                 consoleLog(`[BG] Fetched ${newMessages.length} messages for thread ${threadId}.`);
 
                 if (newMessages.length > 0) {
@@ -1496,7 +1558,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                             // Optionally update existing message if needed, though 4chan posts are immutable mostly
                         }
                     });
-                    updatedMessages.sort((a, b) => a.time - b.time); 
+                    updatedMessages.sort((a, b) => a.time - b.time);
                     messagesByThreadId[threadId] = updatedMessages;
                      // Ensure OP's title is used for the thread if messagesByThreadId was empty
                     if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
@@ -1521,7 +1583,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
             localStorage.setItem(COLORS_KEY, JSON.stringify(threadColors));
 
             consoleLog('[BG] Data saved. Dispatching otkMessagesUpdated event.');
-            window.dispatchEvent(new CustomEvent('otkMessagesUpdated')); 
+            window.dispatchEvent(new CustomEvent('otkMessagesUpdated'));
             renderThreadList();
             updateDisplayedStatistics();
             consoleLog('[BG] Background refresh complete.');
@@ -1561,7 +1623,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                 if (!previousActiveThreadIds.has(threadIdNum) && !activeThreads.includes(threadIdNum)) {
                     consoleLog(`[Manual] Adding new thread ${threadIdNum}.`);
                     activeThreads.push(threadIdNum);
-                    getThreadColor(threadIdNum); 
+                    getThreadColor(threadIdNum);
                 }
             });
             consoleLog(`[Manual] Active threads after catalog sync: ${activeThreads.length}`, activeThreads);
@@ -1574,9 +1636,9 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                 const baseProgress = 20; // After catalog scan
                 const loopProgress = totalThreadsToFetch > 0 ? (threadsFetched / totalThreadsToFetch) * 70 : 70; // 70% of progress for fetching
                 updateLoadingProgress(baseProgress + loopProgress, `Fetching thread ${threadsFetched} of ${totalThreadsToFetch} (${threadId})...`);
-                
+
                 consoleLog(`[Manual] Fetching messages for thread ${threadId}...`);
-                let newMessages = await fetchThreadMessages(threadId); 
+                let newMessages = await fetchThreadMessages(threadId);
                 consoleLog(`[Manual] Fetched ${newMessages.length} messages for thread ${threadId}.`);
 
                 if (newMessages.length > 0) {
@@ -1594,7 +1656,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                          messagesByThreadId[threadId][0].title = newMessages[0].title;
                     }
                 } else {
-                     if (activeThreads.includes(Number(threadId))) { 
+                     if (activeThreads.includes(Number(threadId))) {
                         consoleLog(`[Manual] No messages for active thread ${threadId}. Removing.`);
                         activeThreads = activeThreads.filter(id => id !== Number(threadId));
                         delete messagesByThreadId[threadId];
@@ -1614,10 +1676,42 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
             window.dispatchEvent(new CustomEvent('otkMessagesUpdated'));
             updateDisplayedStatistics();
 
-            if (otkViewer && otkViewer.style.display === 'block') {
-                consoleLog('[Manual Refresh] Viewer is open, re-rendering content.');
-                await renderMessagesInViewer({isToggleOpen: false}); // Pass flag to ensure scroll to bottom
+            // New logic for incremental append or full render
+            const messagesContainer = document.getElementById('otk-messages-container'); // Still needed to check if viewer is open and has container
+            let viewerIsOpen = otkViewer && otkViewer.style.display === 'block';
+
+            // Scroll position logic is removed from here for append.
+            // toggleViewer handles scroll restoration for open/close.
+
+            // Consolidate all messages fetched in this cycle to check for new ones
+            let allFetchedMessagesThisCycle = [];
+            for (const threadId of activeThreads) {
+                if (messagesByThreadId[threadId]) {
+                    allFetchedMessagesThisCycle = allFetchedMessagesThisCycle.concat(messagesByThreadId[threadId]);
+                }
             }
+            allFetchedMessagesThisCycle.sort((a, b) => a.time - b.time); // Ensure sorted if order matters for append logic
+
+            const newMessagesToAppend = allFetchedMessagesThisCycle.filter(m => !renderedMessageIdsInViewer.has(m.id));
+
+            if (viewerIsOpen && newMessagesToAppend.length > 0) {
+                consoleLog(`[Manual Refresh] Viewer is open, appending ${newMessagesToAppend.length} new messages.`);
+                // Call simplified: only pass newMessagesToAppend
+                await appendNewMessagesToViewer(newMessagesToAppend);
+            } else if (viewerIsOpen) {
+                // Viewer is open but no new messages, or an issue occurred in filtering.
+                // Could be a full re-render or do nothing if content is identical.
+                // For safety, a full re-render if something changed overall but no *new* messages.
+                // However, if newMessagesToAppend is 0, implies all messages are already rendered.
+                // Let's assume if newMessagesToAppend is 0, no DOM change is needed unless other state changed.
+                // The original logic was a full re-render:
+                consoleLog('[Manual Refresh] Viewer is open, but no new messages to append. Re-rendering for consistency (or doing nothing if truly no changes).');
+                // To avoid unnecessary full re-renders if only existing messages were updated (which is rare for 4chan),
+                // we might only re-render if the *set* of messages changed, not just content.
+                // For now, let's stick to re-rendering if no append, to match original behavior branch.
+                await renderMessagesInViewer({ isToggleOpen: false }); // Ensures scroll to bottom if no scroll preservation needed.
+            }
+            // If viewer is not open, no specific viewer update action here, it will populate on next open.
 
             updateLoadingProgress(100, "Refresh complete!");
             setTimeout(hideLoadingScreen, 500);
@@ -1633,7 +1727,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
 
     async function clearAndRefresh() {
         consoleLog('[Clear] Clear and Refresh initiated...');
-        isManualRefreshInProgress = true; 
+        isManualRefreshInProgress = true;
         try {
             activeThreads = [];
             messagesByThreadId = {};
@@ -1666,15 +1760,15 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
             }
 
             consoleLog('[Clear] Calling refreshThreadsAndMessages to repopulate...');
-            await refreshThreadsAndMessages(); 
+            await refreshThreadsAndMessages();
 
             consoleLog('[Clear] Dispatching otkClearViewerDisplay event.');
-            window.dispatchEvent(new CustomEvent('otkClearViewerDisplay')); 
+            window.dispatchEvent(new CustomEvent('otkClearViewerDisplay'));
             consoleLog('[Clear] Clear and Refresh complete.');
         } catch (error) {
             consoleError('[Clear] Error during clear and refresh:', error);
         } finally {
-            isManualRefreshInProgress = false; 
+            isManualRefreshInProgress = false;
             consoleLog('[Clear] Manual refresh flag reset.');
             // Re-render and update stats after clearing everything and initial fetch
             renderThreadList();
@@ -1696,13 +1790,13 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
 
         otkViewer.style.cssText = `
             position: fixed;
-            top: 86px; 
+            top: 86px;
             left: 0;
             width: 100vw;
-            bottom: 0; 
+            bottom: 0;
             background-color: #181818; /* New background color */
             opacity: 1; /* Ensure full opacity */
-            z-index: 9998; 
+            z-index: 9998;
             /* overflow-y: auto; */ /* Removed: messagesContainer will handle scroll */
             box-sizing: border-box;
             color: #e6e6e6; /* New default text color for viewer */
@@ -1717,8 +1811,8 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
     function toggleViewer() {
         if (!otkViewer) {
             consoleWarn('Viewer element not found. Attempting to create.');
-            ensureViewerExists(); 
-            if (!otkViewer) { 
+            ensureViewerExists();
+            if (!otkViewer) {
                 consoleError('Viewer element could not be initialized.');
                 return;
             }
@@ -1732,7 +1826,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                 consoleLog(`Viewer closed. Scroll position saved: ${lastViewerScrollTop}`);
             }
             otkViewer.style.display = 'none';
-            document.body.style.overflow = 'auto'; 
+            document.body.style.overflow = 'auto';
             localStorage.setItem(VIEWER_OPEN_KEY, 'false');
             consoleLog('Viewer hidden state saved to localStorage.');
             // Reset viewer-specific counts and update stats to reflect totals
@@ -1741,7 +1835,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
             updateDisplayedStatistics();
         } else {
             otkViewer.style.display = 'block';
-            document.body.style.overflow = 'hidden'; 
+            document.body.style.overflow = 'hidden';
             localStorage.setItem(VIEWER_OPEN_KEY, 'true');
             consoleLog('Viewer shown. State saved to localStorage. Rendering all messages.');
             // renderMessagesInViewer will calculate and set viewerActive counts and then call updateDisplayedStatistics
@@ -1758,13 +1852,15 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
         if (threadsTrackedElem && totalMessagesElem && localImagesElem && localVideosElem) {
             const liveThreadsCount = activeThreads.length;
             let totalMessagesCount = 0;
+            // Count all messages from all stored threads for "Total Messages"
             for (const threadId in messagesByThreadId) {
-                if (messagesByThreadId.hasOwnProperty(threadId) && activeThreads.includes(Number(threadId))) {
-                    totalMessagesCount += messagesByThreadId[threadId].length;
+                if (messagesByThreadId.hasOwnProperty(threadId)) {
+                    totalMessagesCount += (messagesByThreadId[threadId] || []).length;
                 }
             }
             const paddingLength = 4;
             threadsTrackedElem.textContent = `- ${padNumber(liveThreadsCount, paddingLength)} Live Thread${liveThreadsCount === 1 ? '' : 's'}`;
+            // totalMessagesElem now reflects all stored messages, not just from activeThreads
             totalMessagesElem.textContent = `- ${padNumber(totalMessagesCount, paddingLength)} Total Message${totalMessagesCount === 1 ? '' : 's'}`;
 
             const imageCountFromStorage = parseInt(localStorage.getItem(LOCAL_IMAGE_COUNT_KEY) || '0');
@@ -1806,8 +1902,8 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
             `;
             button.onmouseover = () => button.style.backgroundColor = '#666';
             button.onmouseout = () => button.style.backgroundColor = '#555';
-            button.onmousedown = () => button.style.backgroundColor = '#444'; 
-            button.onmouseup = () => button.style.backgroundColor = '#666'; 
+            button.onmousedown = () => button.style.backgroundColor = '#444';
+            button.onmouseup = () => button.style.backgroundColor = '#666';
             return button;
         }
 
@@ -1819,7 +1915,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
         btnRefresh.addEventListener('click', async () => {
             consoleLog('[GUI] "Refresh Data" button clicked.');
             // sessionStorage.setItem('otkManualRefreshClicked', 'true'); // Not currently used elsewhere
-            btnRefresh.disabled = true; 
+            btnRefresh.disabled = true;
             // isManualRefreshInProgress is set within refreshThreadsAndMessages
             try {
                 await refreshThreadsAndMessages();
@@ -1828,7 +1924,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
                 consoleError('[GUI] Error during data refresh:', error);
             } finally {
                 // isManualRefreshInProgress is reset within refreshThreadsAndMessages
-                btnRefresh.disabled = false; 
+                btnRefresh.disabled = false;
                 consoleLog('[GUI] Refresh operation finished.');
             }
         });
@@ -1851,8 +1947,8 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
         controlsWrapper.style.cssText = `
             display: flex;
             flex-direction: column;
-            justify-content: space-around; 
-            align-items: flex-start; 
+            justify-content: space-around;
+            align-items: flex-start;
             gap: 4px; /* Increased gap */
             height: auto; /* Allow it to size based on content */
         `;
@@ -1875,7 +1971,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
 
         bgUpdateCheckboxContainer.appendChild(bgUpdateCheckbox);
         bgUpdateCheckboxContainer.appendChild(bgUpdateLabel);
-        controlsWrapper.appendChild(bgUpdateCheckboxContainer); 
+        controlsWrapper.appendChild(bgUpdateCheckboxContainer);
 
         const btnClearRefresh = createTrackerButton('Restart Tracker', 'otk-restart-tracker-btn');
         btnClearRefresh.style.alignSelf = 'center'; // Override parent's align-items:stretch to allow natural width & centering
@@ -1893,8 +1989,8 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
         // controlsWrapper has align-self: center and width: fit-content, which is good.
         // Ensure controlsWrapper takes appropriate width for its content (checkbox + label)
         // and centers itself within the stretched column.
-        controlsWrapper.style.width = 'fit-content'; 
-        controlsWrapper.style.alignSelf = 'center'; 
+        controlsWrapper.style.width = 'fit-content';
+        controlsWrapper.style.alignSelf = 'center';
 
         thirdButtonColumn.appendChild(controlsWrapper);
         // btnClearRefresh is handled below
@@ -1920,7 +2016,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
             btnClearRefresh.disabled = true;
             // isManualRefreshInProgress will be handled by clearAndRefresh
             try {
-                await clearAndRefresh(); 
+                await clearAndRefresh();
                 consoleLog('[GUI] Clear and refresh sequence complete.');
             } catch (error) {
                 consoleError('[GUI] Error during clear and refresh sequence:', error);
@@ -1985,7 +2081,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
         ensureViewerExists(); // Ensure viewer div is in DOM early
 
         try {
-            await initDB(); 
+            await initDB();
             consoleLog("IndexedDB initialization attempt complete.");
 
             // Recalculate and display initial media stats
