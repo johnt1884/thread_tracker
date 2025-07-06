@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>10 Theme Examples – Corrected Quote Bodies</title>
+  <style>
+    body {
+      background-color: #181818;
+      color: #e6e6e6;
+      font-family: Arial, sans-serif;
+      padding: 20px;
+    }
+
+    .theme-block {
+      margin-bottom: 60px;
+    }
+
+    .label {
+      font-size: 20px;
+      font-weight: bold;
+      margin-bottom: 16px;
+      border-bottom: 2px solid #555;
+      padding-bottom: 4px;
+    }
+
+    .otk-message {
+      background-color: #343434;
+      padding: 10px 12px;
+      border-radius: 6px;
+      margin-bottom: 15px;
+      color: #e6e6e6;
+    }
+
+    .quoted {
+      background-color: #525252;
+      padding: 8px 10px;
+      border-radius: 5px;
+      margin-bottom: 8px;
+    }
+
+    .post-header {
+      font-size: 12px;
+      color: #aaa;
+      margin-bottom: 4px;
+    }
+
+    .post-content {
+      white-space: pre-wrap;
+    }
+
+    .divider {
+      border-top: 2px dashed #555;
+      margin: 40px 0;
+    }
+
+    /* === Red Accent Variations === */
+    .left-red        { border-left: 4px solid red; }
+    .top-bottom-red  { border-top: 2px solid red; border-bottom: 2px solid red; }
+    .top-line        { border-top: 3px solid red; }
+    .bottom-line     { border-bottom: 3px solid red; }
+    .double-left     { border-left: 4px double red; }
+    .dashed-left     { border-left: 4px dashed red; }
+    .dotted-left     { border-left: 4px dotted red; }
+    .glow-left       { border-left: 4px solid red; box-shadow: -3px 0 10px red; }
+    .inner-glow      { box-shadow: inset 0 0 10px red; }
+    .outer-shadow    { box-shadow: 0 0 10px red; }
+  </style>
+</head>
+<body>
+
+<script>
+  const messageTemplates = (accentClass) => `
+    <!-- Single Message -->
+    <div class="otk-message ${accentClass}">
+      <div class="post-header">#1001 12:00:00 2025-07-04</div>
+      <div class="post-content">This is a regular message with no quotes. Just text.</div>
+    </div>
+
+    <!-- One Quote -->
+    <div class="otk-message ${accentClass}">
+      <div class="quoted">
+        <div class="post-header">#1001 12:00:00 2025-07-04</div>
+        <div class="post-content">This is a regular message with no quotes. Just text.</div>
+      </div>
+      <div class="post-header">#1002 12:02:00 2025-07-04</div>
+      <div class="post-content">Responding to message 1001.</div>
+    </div>
+
+    <!-- Two Quotes (corrected) -->
+    <div class="otk-message ${accentClass}">
+      <div class="quoted">
+        <div class="otk-message" style="margin-bottom: 8px;">
+          <div class="post-header">#1001 12:00:00 2025-07-04</div>
+          <div class="post-content">This is a regular message with no quotes. Just text.</div>
+        </div>
+        <div class="post-header">#1002 12:02:00 2025-07-04</div>
+        <div class="post-content">Responding to message 1001.</div>
+      </div>
+      <div class="post-header">#1003 12:04:00 2025-07-04</div>
+      <div class="post-content">Responding to message 1002.</div>
+    </div>
+  `;
+
+  const themes = [
+    { name: '1. Left Red Accent', class: 'left-red' },
+    { name: '2. Top and Bottom Red Line', class: 'top-bottom-red' },
+    { name: '3. Top Red Line', class: 'top-line' },
+    { name: '4. Bottom Red Line', class: 'bottom-line' },
+    { name: '5. Double Left Border', class: 'double-left' },
+    { name: '6. Dashed Left Border', class: 'dashed-left' },
+    { name: '7. Dotted Left Border', class: 'dotted-left' },
+    { name: '8. Glow Left Border', class: 'glow-left' },
+    { name: '9. Inner Red Glow', class: 'inner-glow' },
+    { name: '10. Red Outer Shadow', class: 'outer-shadow' },
+  ];
+
+  document.addEventListener("DOMContentLoaded", () => {
+    const container = document.body;
+    themes.forEach(theme => {
+      const block = document.createElement("div");
+      block.className = "theme-block";
+      block.innerHTML = `
+        <div class="label">${theme.name}</div>
+        ${messageTemplates(theme.class)}
+      `;
+      container.appendChild(block);
+      container.appendChild(document.createElement("div")).className = "divider";
+    });
+  });
+</script>
+
+</body>
+</html>
