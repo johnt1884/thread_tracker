@@ -23,6 +23,7 @@
     const ANCHORED_MESSAGE_ID_KEY = 'otkAnchoredMessageId'; // For storing anchored message ID
     const ANCHORED_MESSAGE_CLASS = 'otk-anchored-message'; // CSS class for highlighting anchored message
     const MAX_QUOTE_DEPTH = 2; // Maximum depth for rendering nested quotes
+    const SEEN_EMBED_URL_IDS_KEY = 'otkSeenEmbedUrlIds'; // For tracking unique text embeds for stats
 
     // --- Global variables ---
     let otkViewer = null;
@@ -36,6 +37,7 @@
     let uniqueImageViewerHashes = new Set(); // Global set for viewer's unique image hashes
     let uniqueVideoViewerHashes = new Set(); // Global set for viewer's unique video hashes
     let renderedFullSizeImageHashes = new Set(); // Tracks image hashes already rendered full-size in current viewer session
+    let mediaIntersectionObserver = null; // For lazy loading embeds
 
     // IndexedDB instance
     let otkMediaDB = null;
@@ -180,6 +182,248 @@
 
 
     // --- IndexedDB Initialization ---
+
+
+    // --- Media Embedding Helper Functions ---
+function createYouTubeEmbedElement(videoId, timestampStr) { // Removed isInlineEmbed parameter
+    let startSeconds = 0;
+    if (timestampStr) {
+        // Try to parse timestamp like 1h2m3s or 2m3s or 3s or just 123 (YouTube takes raw seconds for ?t=)
+        // More robust parsing might be needed if youtube itself uses 1m30s format in its ?t= parameter.
+        // For now, assume ?t= is always seconds from the regex, or simple h/m/s format.
+        // Regex for youtubeMatch already captures 't' as a string of digits or h/m/s.
+        // Let's refine the parsing for h/m/s format.
+        if (timestampStr.match(/^\d+$/)) { // Pure seconds e.g. t=123
+             startSeconds = parseInt(timestampStr, 10) || 0;
+        } else { // Attempt to parse 1h2m3s format
+            const timeParts = timestampStr.match(/(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?/);
+            if (timeParts) {
+                const hours = parseInt(timeParts[1], 10) || 0;
+                const minutes = parseInt(timeParts[2], 10) || 0;
+                const seconds = parseInt(timeParts[3], 10) || 0; // Also handles case like "123" if 's' is optional and no h/m
+                if (hours > 0 || minutes > 0 || seconds > 0) { // ensure some part was parsed
+                     startSeconds = (hours * 3600) + (minutes * 60) + seconds;
+                } else if (timeParts[0] === timestampStr && !isNaN(parseInt(timestampStr,10)) ) { // fallback for plain numbers if regex above was too greedy with optional s
+                    startSeconds = parseInt(timestampStr, 10) || 0;
+                }
+            }
+        }
+    }
+
+    const embedUrl = `https://www.youtube.com/embed/${videoId}` + (startSeconds > 0 ? `?start=${startSeconds}&autoplay=0` : '?autoplay=0'); // Added autoplay=0
+
+    // Create a wrapper for responsive iframe
+    const wrapper = document.createElement('div');
+    wrapper.className = 'otk-youtube-embed-wrapper'; // Base class
+    // Add 'otk-embed-inline' if specific styling beyond size is still desired from CSS,
+    // or remove if all styling is now direct. For now, let's assume it might still be useful for other tweaks.
+    wrapper.classList.add('otk-embed-inline');
+
+    wrapper.style.position = 'relative'; // Needed for the absolutely positioned iframe
+    wrapper.style.overflow = 'hidden';   // Good practice for wrappers
+    wrapper.style.margin = '10px 0';     // Consistent vertical margin
+    wrapper.style.backgroundColor = '#000'; // Black background while loading
+
+    // Universal fixed size for all YouTube embeds
+    wrapper.style.width = '480px';
+    wrapper.style.height = '270px'; // 16:9 aspect ratio for 480px width
+    // No paddingBottom or conditional sizing logic needed anymore
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'absolute';
+    iframe.style.top = '0';
+    iframe.style.left = '0';
+    iframe.style.width = '100%';
+    iframe.style.height = '100%';
+    // iframe.src = embedUrl; // Will be set by IntersectionObserver
+    iframe.dataset.src = embedUrl; // Store for lazy loading
+    iframe.setAttribute('frameborder', '0');
+    iframe.setAttribute('allowfullscreen', 'true');
+    // Removed autoplay from here as it's in URL, added picture-in-picture and web-share
+    iframe.setAttribute('allow', 'accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
+
+    wrapper.appendChild(iframe);
+
+    if (mediaIntersectionObserver) {
+        mediaIntersectionObserver.observe(wrapper);
+    } else {
+        // Fallback if observer isn't ready (e.g. if createYouTubeEmbedElement is called before renderMessagesInViewer)
+        // This shouldn't happen in the current flow where embeds are created during renderMessagesInViewer.
+        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready. Iframe will load immediately:", iframe.dataset.src);
+        iframe.src = iframe.dataset.src;
+    }
+    return wrapper;
+}
+
+// Helper function for processing text segments (either append as text or handle as quote)
+function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, mediaLoadPromises) {
+    // Note: mediaLoadPromises is passed down in case quote recursion generates media elements that need tracking.
+    // However, createMessageElementDOM for quotes currently passes an empty array for it. This could be enhanced.
+    const quoteMatch = segment.match(quoteRegex);
+
+    if (quoteMatch && segment.startsWith(quoteMatch[0])) { // Process as quote only if segment starts with it
+        // Handle quote (potentially recursive)
+        if (currentDepth >= MAX_QUOTE_DEPTH) {
+            // At max depth, display quote link as text or a placeholder, but don't recurse
+            // To match original behavior of skipping pure ">>123" lines at max depth:
+            if (segment === quoteMatch[0]) return; // Skip pure quote link if it's the entire segment
+
+            // If "text >>123" or ">>123 text" at max depth, treat as text
+            textElement.appendChild(document.createTextNode(segment));
+            return;
+        }
+
+        // Not at max depth, so process the quote
+        const quotedMessageId = quoteMatch[1];
+        let quotedMessageObject = null;
+        for (const threadIdKey in messagesByThreadId) {
+            if (messagesByThreadId.hasOwnProperty(threadIdKey)) {
+                const foundMsg = messagesByThreadId[threadIdKey].find(m => m.id === Number(quotedMessageId));
+                if (foundMsg) {
+                    quotedMessageObject = foundMsg;
+                    break;
+                }
+            }
+        }
+
+        if (quotedMessageObject) {
+            const quotedElement = createMessageElementDOM(
+                quotedMessageObject,
+                mediaLoadPromises, // Pass down mediaLoadPromises
+                uniqueImageViewerHashes,
+                uniqueVideoViewerHashes,
+                quotedMessageObject.board || boardForLink,
+                false, // isTopLevelMessage = false for quotes
+                currentDepth + 1,
+                null // threadColor is not used for quoted message accents
+            );
+            if (quotedElement) {
+                textElement.appendChild(quotedElement);
+            }
+        } else {
+            const notFoundSpan = document.createElement('span');
+            notFoundSpan.textContent = `>>${quotedMessageId} (Not Found)`;
+            notFoundSpan.style.color = '#88ccee';
+            notFoundSpan.style.textDecoration = 'underline';
+            textElement.appendChild(notFoundSpan);
+        }
+
+        const restOfSegment = segment.substring(quoteMatch[0].length);
+        if (restOfSegment.length > 0) {
+            // Recursively process the rest of the segment for more quotes or text
+            // This is important if a line is like ">>123 >>456 text"
+            appendTextOrQuoteSegment(textElement, restOfSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, mediaLoadPromises);
+        }
+    } else {
+        // Not a quote at the start of the segment (or not a quote at all), just plain text for this segment
+        if (segment.length > 0) { // Ensure non-empty segment before creating text node
+            textElement.appendChild(document.createTextNode(segment));
+        }
+    }
+}
+
+function createTwitchEmbedElement(type, id, timestampStr) {
+    let embedUrl;
+    const parentDomain = 'boards.4chan.org'; // Or dynamically get current hostname if needed for wider use
+
+    if (type === 'clip_direct' || type === 'clip_channel') {
+        embedUrl = `https://clips.twitch.tv/embed?clip=${id}&parent=${parentDomain}&autoplay=false`;
+    } else if (type === 'vod') {
+        let timeParam = '';
+        if (timestampStr) {
+            // Twitch expects format like 01h30m20s
+            // The regex twitchTimestampRegex captures ((?:\d+h)?(?:\d+m)?(?:\d+s)?)
+            // We need to ensure it's formatted correctly if only parts are present e.g. "30m10s" or "1h5s"
+            // The regex already produces a string like "1h2m3s" or "45m" or "30s".
+            // If it's just seconds, e.g. "120s", that's also valid.
+            // If it's "120", it needs 's' appended. The regex ensures 's' if only seconds, or h/m present.
+            // The regex `((?:\d+h)?(?:\d+m)?(?:\d+s)?)` might result in empty string if no t= is found.
+            // And if t= is empty like `t=`, timestampStr would be empty.
+            if (timestampStr.length > 0) { // Ensure timestampStr is not empty
+                 timeParam = `&time=${timestampStr}`;
+            }
+        }
+        embedUrl = `https://player.twitch.tv/?video=${id}&parent=${parentDomain}&autoplay=false${timeParam}`;
+    } else {
+        consoleError(`[EmbedTwitch] Unknown Twitch embed type: ${type}`);
+        return document.createTextNode(`[Invalid Twitch Embed Type: ${type}]`);
+    }
+
+    const wrapper = document.createElement('div');
+    // Apply common classes for potential shared styling, and specific for twitch
+    wrapper.className = 'otk-twitch-embed-wrapper otk-embed-inline'; // All embeds are now 'inline' styled (fixed small size)
+
+    wrapper.style.position = 'relative';
+    wrapper.style.overflow = 'hidden';
+    wrapper.style.margin = '10px 0'; // Consistent vertical margin
+    wrapper.style.backgroundColor = '#181818'; // Twitchy background color
+
+    // Universal fixed size for all embeds
+    wrapper.style.width = '480px';
+    wrapper.style.height = '270px'; // 16:9 aspect ratio for 480px width
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'absolute';
+    iframe.style.top = '0';
+    iframe.style.left = '0';
+    iframe.style.width = '100%';
+    iframe.style.height = '100%';
+    iframe.dataset.src = embedUrl; // For lazy loading
+    iframe.setAttribute('frameborder', '0');
+    iframe.setAttribute('allowfullscreen', 'true');
+    iframe.setAttribute('scrolling', 'no'); // Twitch often recommends this
+    // Twitch player might have its own autoplay rules, but autoplay=false in URL is a good hint
+
+    wrapper.appendChild(iframe);
+
+    if (mediaIntersectionObserver) {
+        mediaIntersectionObserver.observe(wrapper);
+    } else {
+        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Twitch. Iframe will load immediately:", iframe.dataset.src);
+        iframe.src = iframe.dataset.src;
+    }
+    return wrapper;
+}
+
+function createStreamableEmbedElement(videoId) {
+    // Streamable embed URL format is typically https://streamable.com/e/VIDEO_ID
+    const embedUrl = `https://streamable.com/e/${videoId}`;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'otk-streamable-embed-wrapper otk-embed-inline'; // Common class for fixed-size embeds
+
+    wrapper.style.position = 'relative';
+    wrapper.style.overflow = 'hidden';
+    wrapper.style.margin = '10px 0';     // Consistent vertical margin
+    wrapper.style.backgroundColor = '#111'; // Dark background for Streamable
+
+    // Universal fixed size for all embeds
+    wrapper.style.width = '480px';
+    wrapper.style.height = '270px'; // Assuming 16:9 for consistency, adjust if Streamable common aspect is different
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'absolute';
+    iframe.style.top = '0';
+    iframe.style.left = '0';
+    iframe.style.width = '100%';
+    iframe.style.height = '100%';
+    iframe.dataset.src = embedUrl; // For lazy loading
+    iframe.setAttribute('frameborder', '0');
+    iframe.setAttribute('allowfullscreen', 'true');
+    iframe.setAttribute('scrolling', 'no');
+    // Streamable embeds generally don't need parent param and handle autoplay via their own player
+
+    wrapper.appendChild(iframe);
+
+    if (mediaIntersectionObserver) {
+        mediaIntersectionObserver.observe(wrapper);
+    } else {
+        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Streamable. Iframe will load immediately:", iframe.dataset.src);
+        iframe.src = iframe.dataset.src;
+    }
+    return wrapper;
+}
+
 
     // --- Data Handling & Utility Functions ---
     function decodeAllHtmlEntities(html) {
@@ -1016,6 +1260,54 @@
 
         const messagesContainer = document.createElement('div');
         messagesContainer.id = 'otk-messages-container';
+
+        // Initialize or re-initialize IntersectionObserver for media within this container
+        if (mediaIntersectionObserver) {
+            mediaIntersectionObserver.disconnect(); // Clean up previous observer if any
+            consoleLog('[LazyLoad] Disconnected previous mediaIntersectionObserver.');
+        }
+
+        // Define handleIntersection here if it's not accessible globally or from main's scope
+        // For this structure, assuming handleIntersection defined in main() is accessible.
+        // If not, it would need to be passed or redefined.
+        // Let's assume it's accessible from main's scope for now.
+        // To be certain, we can define it again or ensure it's truly global to the IIFE.
+        // For safety, let's make sure `handleIntersection` is available.
+        // It was defined in main(), so it should be in scope for functions called after main's execution.
+        // However, renderMessagesInViewer can be called independently.
+        // Let's ensure handleIntersection is defined at a scope accessible by renderMessagesInViewer.
+        // Moving its definition to be globally available within the IIFE.
+        // (This will be a separate change if current diff doesn't cover that move) - *Actually, previous diff added it inside main, let's adjust that assumption.*
+        // For now, let's assume it's available. If ReferenceError, we'll move it.
+
+        const observerOptions = {
+            root: messagesContainer, // THIS IS THE KEY: root is the scrollable container
+            rootMargin: '0px 0px 300px 0px',
+            threshold: 0.01
+        };
+
+        // Re-using the handleIntersection from main's scope (or it needs to be global)
+        // If handleIntersection is defined inside main, it won't be accessible here directly unless passed or global.
+        // Let's assume for now it WILL be made accessible (e.g. defined at IIFE scope).
+        // The previous diff put handleIntersection in main, so this will cause an error.
+        // I will need to adjust the location of handleIntersection definition.
+        // For this step, I will proceed assuming it's accessible.
+        // The actual creation:
+        // mediaIntersectionObserver = new IntersectionObserver(handleIntersection, observerOptions);
+        // consoleLog('[LazyLoad] Initialized new mediaIntersectionObserver for messagesContainer.');
+        // This needs `handleIntersection` to be in scope. The previous diff added it inside `main`.
+        // I will adjust the previous diff in my mind and assume `handleIntersection` is now at the IIFE's top level scope.
+        // So, the following line should work under that assumption:
+
+        // Re-evaluating: The `handleIntersection` function was defined inside `main`.
+        // It's better to define it at a higher scope if it's to be used by `renderMessagesInViewer`
+        // and potentially other functions. Let's define it at the IIFE scope.
+        // This means I need a step to move `handleIntersection` first.
+        // For now, I'll put a placeholder here and then make a specific change for `handleIntersection`.
+
+        // Now that handleIntersection is at IIFE scope, this should work:
+        mediaIntersectionObserver = new IntersectionObserver(handleIntersection, observerOptions);
+        consoleLog('[LazyLoad] Initialized new mediaIntersectionObserver for messagesContainer.');
         messagesContainer.style.cssText = `
             position: absolute;
             top: 0;
@@ -1113,20 +1405,54 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
     // Signature includes isTopLevelMessage, currentDepth, and threadColor
     function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor) {
         consoleLog(`[DepthCheck] Rendering message: ${message.id}, currentDepth: ${currentDepth}, MAX_QUOTE_DEPTH: ${MAX_QUOTE_DEPTH}, isTopLevel: ${isTopLevelMessage}`);
+
+        // --- Define all media patterns once at the top of the function ---
+        const youtubePatterns = [
+            { regex: /^(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?(?=.*v=([a-zA-Z0-9_-]+))(?:[?&%#\w\-=\.\/;:]+)+$/, idGroup: 1 },
+            { regex: /^(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;:]*)?$/, idGroup: 1 },
+            { regex: /^(?:https?:\/\/)?youtu\.be\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;:]*)?$/, idGroup: 1 }
+        ];
+        const youtubeTimestampRegex = /[?&]t=([0-9hm_s]+)/;
+        const inlineYoutubePatterns = [
+            { type: 'watch', regex: /(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?(?:[^#&?\s]*&)*v=([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;]*)?/, idGroup: 1 },
+            { type: 'short', regex: /(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;]*)?/, idGroup: 1 },
+            { type: 'youtu.be', regex: /(?:https?:\/\/)?youtu\.be\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;]*)?/, idGroup: 1 }
+        ];
+
+        const twitchPatterns = [
+            { type: 'clip_direct', regex: /^(?:https?:\/\/)?clips\.twitch\.tv\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;:]*)?$/, idGroup: 1 },
+            { type: 'clip_channel', regex: /^(?:https?:\/\/)?(?:www\.)?twitch\.tv\/[a-zA-Z0-9_]+\/clip\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;:]*)?$/, idGroup: 1 },
+            { type: 'vod', regex: /^(?:https?:\/\/)?(?:www\.)?twitch\.tv\/videos\/(\d+)(?:[?&%#\w\-=\.\/;:]*)?$/, idGroup: 1 }
+        ];
+        const twitchTimestampRegex = /[?&]t=((?:\d+h)?(?:\d+m)?(?:\d+s)?)/;
+        const inlineTwitchPatterns = [
+            { type: 'clip_direct', regex: /(?:https?:\/\/)?clips\.twitch\.tv\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;:]*)?/, idGroup: 1 },
+            { type: 'clip_channel', regex: /(?:https?:\/\/)?(?:www\.)?twitch\.tv\/[a-zA-Z0-9_]+\/clip\/([a-zA-Z0-9_-]+)(?:[?&%#\w\-=\.\/;:]*)?/, idGroup: 1 },
+            { type: 'vod', regex: /(?:https?:\/\/)?(?:www\.)?twitch\.tv\/videos\/(\d+)(?:[?&%#\w\-=\.\/;:]*)?/, idGroup: 1 }
+        ];
+
+        const streamablePatterns = [
+            { type: 'video', regex: /^(?:https?:\/\/)?streamable\.com\/([a-zA-Z0-9]+)(?:[?#][^\s]*)?$/, idGroup: 1 }
+        ];
+        const inlineStreamablePatterns = [
+            { type: 'video', regex: /(?:https?:\/\/)?streamable\.com\/([a-zA-Z0-9]+)(?:[?&%#\w\-=\.\/;:]*)?/, idGroup: 1 }
+        ];
+        // --- End of media pattern definitions ---
+
         const messageDiv = document.createElement('div');
         messageDiv.setAttribute('data-message-id', message.id);
 
         let backgroundColor;
-        let borderLeftStyle = 'none';
         let marginLeft = '0';
-        let paddingLeft = '10px'; // Default to 10px, adjusted below
+        let paddingLeft = '10px'; // Default to 10px
         let marginTop = '15px'; // Default top margin
         let marginBottom = '15px'; // Default bottom margin
         const messageTextColor = '#e6e6e6'; // Original light text color
+        // let positionStyle = ''; // REMOVED - No longer needed for relative positioning
 
         if (isTopLevelMessage) { // Depth 0
             backgroundColor = '#343434'; // Original top-level background
-            borderLeftStyle = threadColor ? `4px solid ${threadColor}` : '4px solid red'; // Use threadColor, fallback to red
+            // positionStyle = 'position: relative;'; // REMOVED - No longer needed for side rectangle
             // marginLeft, marginTop, marginBottom remain defaults for top-level
         } else { // Quoted message (Depth 1+)
             marginLeft = '0px'; // No specific indent margin for quote itself
@@ -1144,6 +1470,7 @@ messageDiv.style.cssText = `
     display: block;
     background-color: ${backgroundColor};
     color: ${messageTextColor}; /* Reverted text color */
+    /* position: relative; REMOVED - No longer needed */
 
     margin-top: ${marginTop};
     margin-bottom: ${marginBottom};
@@ -1153,7 +1480,7 @@ messageDiv.style.cssText = `
     padding-left: ${paddingLeft};
     padding-right: 10px; /* Standardized to 10px */
 
-    border-left: ${borderLeftStyle};
+    /* border-left: ; REMOVED - Replaced by new rectangle element */
     border-radius: 5px;
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 
@@ -1162,7 +1489,8 @@ messageDiv.style.cssText = `
     overflow-x: hidden;
 `;
 
-
+        // Removed the side rectangle logic that was here:
+        // if (isTopLevelMessage && threadColor) { ... }
 
         const messageHeader = document.createElement('div');
 
@@ -1187,8 +1515,29 @@ messageDiv.style.cssText = `
 
         if (isTopLevelMessage) {
             messageHeader.style.justifyContent = 'space-between'; // For ID+Time (left) and Date (right)
-            const idSpan = document.createElement('span');
-            idSpan.textContent = `#${message.id} | ${timestampParts.time}`; // Combined ID and Time
+
+            // Create a container for the color square and the ID/Time text
+            const leftHeaderContent = document.createElement('span');
+            leftHeaderContent.style.display = 'flex'; // Use flex to align square and text
+            leftHeaderContent.style.alignItems = 'center'; // Vertically align items in the flex container
+
+            if (threadColor) {
+                const colorSquare = document.createElement('span');
+                colorSquare.style.cssText = `
+                    display: inline-block;
+                    width: 10px; /* Adjust size as needed */
+                    height: 10px; /* Adjust size as needed */
+                    background-color: ${threadColor};
+                    margin-right: 6px; /* Space between square and '#' */
+                    border-radius: 2px; /* Optional: for rounded corners */
+                    flex-shrink: 0; /* Prevent square from shrinking */
+                `;
+                leftHeaderContent.appendChild(colorSquare);
+            }
+
+            const idTextSpan = document.createElement('span');
+            idTextSpan.textContent = `#${message.id} | ${timestampParts.time}`; // Combined ID and Time
+            leftHeaderContent.appendChild(idTextSpan);
 
             // const timeSpan = document.createElement('span'); // Removed
             // timeSpan.textContent = timestampParts.time;
@@ -1199,7 +1548,7 @@ messageDiv.style.cssText = `
             dateSpan.textContent = timestampParts.date;
             // dateSpan.style.paddingRight = '5px'; // Padding might not be needed or can be adjusted
 
-            messageHeader.appendChild(idSpan);
+            messageHeader.appendChild(leftHeaderContent); // Add the new container
             // messageHeader.appendChild(timeSpan); // Removed
             messageHeader.appendChild(dateSpan);
         } else { // Simplified header for quoted messages
@@ -1221,73 +1570,203 @@ messageDiv.style.cssText = `
             const quoteRegex = /^>>(\d+)/;
 
             lines.forEach((line, lineIndex) => {
-                const quoteMatch = line.match(quoteRegex);
+                const trimmedLine = line.trim();
+                let processedAsEmbed = false;
 
-                if (currentDepth >= MAX_QUOTE_DEPTH) {
-                    // At max depth (or beyond, though shouldn't happen with correct recursion control)
-                    if (quoteMatch) {
-                        // This is a >>link at max depth, skip it entirely.
-                        return; // Skips this iteration of lines.forEach
-                    } else {
-                        // Not a quote link, so it's regular text. Render it.
-                        textElement.appendChild(document.createTextNode(line));
-                        if (lineIndex < lines.length - 1) {
-                            textElement.appendChild(document.createElement('br'));
+                // All pattern definitions have been moved to the top of createMessageElementDOM.
+                // The duplicate Streamable pattern block will also be removed by this change
+                // as we are replacing the entire section where they were previously defined.
+
+                let soleUrlEmbedMade = false;
+
+                // Check for Sole YouTube URL
+                if (!soleUrlEmbedMade) {
+                    for (const patternObj of youtubePatterns) {
+                        const match = trimmedLine.match(patternObj.regex);
+                        if (match) {
+                            const videoId = match[patternObj.idGroup];
+                            let timestampStr = null;
+                            const timeMatch = trimmedLine.match(youtubeTimestampRegex);
+                            if (timeMatch && timeMatch[1]) timestampStr = timeMatch[1];
+                            if (videoId) {
+                                if (isTopLevelMessage) { // Only count for top-level messages
+                                    const canonicalEmbedId = `youtube_${videoId}`;
+                                    let seenEmbeds = JSON.parse(localStorage.getItem(SEEN_EMBED_URL_IDS_KEY)) || [];
+                                    if (!seenEmbeds.includes(canonicalEmbedId)) {
+                                        seenEmbeds.push(canonicalEmbedId);
+                                        localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
+                                        let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
+                                        localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
+                                        updateDisplayedStatistics();
+                                    }
+                                }
+                                textElement.appendChild(createYouTubeEmbedElement(videoId, timestampStr));
+                                soleUrlEmbedMade = true; processedAsEmbed = true; break;
+                            }
                         }
                     }
-                } else { // currentDepth < MAX_QUOTE_DEPTH
-                    if (quoteMatch) {
-                        // It's a >>link and we are allowed to recurse further.
-                        const quotedMessageId = quoteMatch[1];
-                        let quotedMessageObject = null;
-                        for (const threadIdKey in messagesByThreadId) {
-                            if (messagesByThreadId.hasOwnProperty(threadIdKey)) {
-                                const foundMsg = messagesByThreadId[threadIdKey].find(m => m.id === Number(quotedMessageId));
-                                if (foundMsg) {
-                                    quotedMessageObject = foundMsg;
-                                    break;
+                }
+
+                // Check for Sole Twitch URL
+                if (!soleUrlEmbedMade) {
+                    for (const patternObj of twitchPatterns) {
+                        const match = trimmedLine.match(patternObj.regex);
+                        if (match) {
+                            const id = match[patternObj.idGroup];
+                            let timestampStr = null;
+                            if (patternObj.type === 'vod') {
+                                const timeMatch = trimmedLine.match(twitchTimestampRegex);
+                                if (timeMatch && timeMatch[1]) timestampStr = timeMatch[1];
+                            }
+                            if (id) {
+                                if (isTopLevelMessage) {
+                                    const canonicalEmbedId = `twitch_${patternObj.type}_${id}`;
+                                    let seenEmbeds = JSON.parse(localStorage.getItem(SEEN_EMBED_URL_IDS_KEY)) || [];
+                                    if (!seenEmbeds.includes(canonicalEmbedId)) {
+                                        seenEmbeds.push(canonicalEmbedId);
+                                        localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
+                                        let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
+                                        localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
+                                        updateDisplayedStatistics();
+                                    }
+                                }
+                                textElement.appendChild(createTwitchEmbedElement(patternObj.type, id, timestampStr));
+                                soleUrlEmbedMade = true; processedAsEmbed = true; break;
+                            }
+                        }
+                    }
+                }
+
+                // Check for Sole Streamable URL
+                if (!soleUrlEmbedMade) {
+                    for (const patternObj of streamablePatterns) {
+                        const match = trimmedLine.match(patternObj.regex);
+                        if (match) {
+                            const videoId = match[patternObj.idGroup];
+                            // Streamable doesn't have standard URL timestamps to parse here
+                            if (videoId) {
+                                if (isTopLevelMessage) {
+                                    const canonicalEmbedId = `streamable_${videoId}`;
+                                    let seenEmbeds = JSON.parse(localStorage.getItem(SEEN_EMBED_URL_IDS_KEY)) || [];
+                                    if (!seenEmbeds.includes(canonicalEmbedId)) {
+                                        seenEmbeds.push(canonicalEmbedId);
+                                        localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
+                                        let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
+                                        localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
+                                        updateDisplayedStatistics();
+                                    }
+                                }
+                                textElement.appendChild(createStreamableEmbedElement(videoId));
+                                soleUrlEmbedMade = true; processedAsEmbed = true; break;
+                            }
+                        }
+                    }
+                }
+
+                if (!soleUrlEmbedMade) {
+                    let currentTextSegment = line;
+
+                    while (currentTextSegment.length > 0) {
+                        let earliestMatch = null;
+                        let earliestMatchPattern = null;
+                        let earliestMatchType = null;
+
+                        // Find earliest YouTube inline match
+                        for (const patternObj of inlineYoutubePatterns) {
+                            const matchAttempt = currentTextSegment.match(patternObj.regex);
+                            if (matchAttempt) {
+                                if (earliestMatch === null || matchAttempt.index < earliestMatch.index) {
+                                    earliestMatch = matchAttempt;
+                                    earliestMatchPattern = patternObj;
+                                    earliestMatchType = 'youtube';
+                                }
+                            }
+                        }
+                        // Find earliest Twitch inline match
+                        for (const patternObj of inlineTwitchPatterns) {
+                            const matchAttempt = currentTextSegment.match(patternObj.regex);
+                            if (matchAttempt) {
+                                if (earliestMatch === null || matchAttempt.index < earliestMatch.index) {
+                                    earliestMatch = matchAttempt;
+                                    earliestMatchPattern = patternObj;
+                                    earliestMatchType = 'twitch';
+                                }
+                            }
+                        }
+                        // Find earliest Streamable inline match
+                        for (const patternObj of inlineStreamablePatterns) {
+                            const matchAttempt = currentTextSegment.match(patternObj.regex);
+                            if (matchAttempt) {
+                                if (earliestMatch === null || matchAttempt.index < earliestMatch.index) {
+                                    earliestMatch = matchAttempt;
+                                    earliestMatchPattern = patternObj; // type is 'video'
+                                    earliestMatchType = 'streamable';
                                 }
                             }
                         }
 
-                        if (quotedMessageObject) {
-                            const quotedElement = createMessageElementDOM(
-                                quotedMessageObject,
-                                [], // mediaLoadPromises - see note in plan about this if issues persist
-                                uniqueImageViewerHashes,
-                                uniqueVideoViewerHashes,
-                                quotedMessageObject.board || 'b',
-                                false, // isTopLevelMessage = false for quotes
-                                currentDepth + 1,
-                                null // threadColor is not used for quoted message accents
-                            );
-                            if (quotedElement) {
-                                textElement.appendChild(quotedElement);
-                            }
-                        } else {
-                            const notFoundSpan = document.createElement('span');
-                            notFoundSpan.textContent = `>>${quotedMessageId} (Not Found)`;
-                            notFoundSpan.style.color = '#88ccee';
-                            notFoundSpan.style.textDecoration = 'underline';
-                            textElement.appendChild(notFoundSpan);
-                        }
+                        if (earliestMatch) {
+                            processedAsEmbed = true;
 
-                        const restOfLine = line.substring(quoteMatch[0].length).trim();
-                        if (restOfLine) {
-                            const restOfLineSpan = document.createElement('span');
-                            restOfLineSpan.textContent = " " + restOfLine;
-                            textElement.appendChild(restOfLineSpan);
-                        }
-                        if (lineIndex < lines.length - 1 || restOfLine) {
-                            textElement.appendChild(document.createElement('br'));
-                        }
-                    } else {
-                        // Not a quote link, and not at max depth. Regular text.
-                        textElement.appendChild(document.createTextNode(line));
-                        if (lineIndex < lines.length - 1) {
-                            textElement.appendChild(document.createElement('br'));
+                            if (earliestMatch.index > 0) {
+                                appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, mediaLoadPromises);
+                            }
+
+                            const matchedUrl = earliestMatch[0];
+                            const id = earliestMatch[earliestMatchPattern.idGroup];
+                            let timestampStr = null; // Relevant for YT & Twitch VODs
+                            let embedElement = null;
+                            let canonicalEmbedId = null;
+
+                            if (earliestMatchType === 'youtube') {
+                                const timeMatchInUrl = matchedUrl.match(youtubeTimestampRegex);
+                                if (timeMatchInUrl && timeMatchInUrl[1]) timestampStr = timeMatchInUrl[1];
+                                if (id) {
+                                    canonicalEmbedId = `youtube_${id}`;
+                                    embedElement = createYouTubeEmbedElement(id, timestampStr);
+                                }
+                            } else if (earliestMatchType === 'twitch') {
+                                if (earliestMatchPattern.type === 'vod') {
+                                    const timeMatchInUrl = matchedUrl.match(twitchTimestampRegex);
+                                    if (timeMatchInUrl && timeMatchInUrl[1]) timestampStr = timeMatchInUrl[1];
+                                }
+                                if (id) {
+                                    canonicalEmbedId = `twitch_${earliestMatchPattern.type}_${id}`;
+                                    embedElement = createTwitchEmbedElement(earliestMatchPattern.type, id, timestampStr);
+                                }
+                            } else if (earliestMatchType === 'streamable') {
+                                if (id) {
+                                    canonicalEmbedId = `streamable_${id}`;
+                                    embedElement = createStreamableEmbedElement(id);
+                                }
+                            }
+
+                            if (embedElement) {
+                                if (isTopLevelMessage && canonicalEmbedId) { // Check if it's a top-level message and we have an ID
+                                    let seenEmbeds = JSON.parse(localStorage.getItem(SEEN_EMBED_URL_IDS_KEY)) || [];
+                                    if (!seenEmbeds.includes(canonicalEmbedId)) {
+                                        seenEmbeds.push(canonicalEmbedId);
+                                        localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
+                                        let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
+                                        localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
+                                        updateDisplayedStatistics();
+                                    }
+                                }
+                                textElement.appendChild(embedElement);
+                            }
+
+                            currentTextSegment = currentTextSegment.substring(earliestMatch.index + matchedUrl.length);
+                        } else {
+                            if (currentTextSegment.length > 0) {
+                                appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, mediaLoadPromises);
+                            }
+                            currentTextSegment = "";
                         }
                     }
+                }
+
+                if (lineIndex < lines.length - 1 && (trimmedLine.length > 0 || processedAsEmbed)) {
+                    textElement.appendChild(document.createElement('br'));
                 }
             });
         } else {
@@ -1998,9 +2477,10 @@ messageDiv.style.cssText = `
             localStorage.removeItem(MESSAGES_KEY);
             localStorage.removeItem(COLORS_KEY);
             localStorage.removeItem(DROPPED_THREADS_KEY);
+            localStorage.removeItem(SEEN_EMBED_URL_IDS_KEY); // Clear seen embed IDs
             localStorage.setItem(LOCAL_IMAGE_COUNT_KEY, '0'); // Reset image count
             localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, '0'); // Reset video count
-            consoleLog('[Clear] LocalStorage (including media counts) cleared/reset.');
+            consoleLog('[Clear] LocalStorage (including media counts and seen embeds) cleared/reset.');
 
             if (otkMediaDB) {
                 consoleLog('[Clear] Clearing IndexedDB mediaStore...');
@@ -2335,29 +2815,100 @@ messageDiv.style.cssText = `
         }
     }
 
-    // --- Initial Actions / Main Execution ---
-    async function main() {
-        consoleLog("Starting OTK Thread Tracker script (v2.7)...");
+// --- IIFE Scope Helper for Intersection Observer ---
+function handleIntersection(entries, observerInstance) {
+    entries.forEach(entry => {
+        // The outer if (entry.isIntersecting) was removed in the previous correction,
+        // which was good. The issue is the double declaration.
+        // The structure should be:
+        // entries.forEach(entry => {
+        //    const wrapper = entry.target;
+        //    const iframe = wrapper.querySelector('iframe'); // Declared ONCE
+        //    if (iframe) {
+        //        if (entry.isIntersecting) { ... } else { ... }
+        //    }
+        // });
+        // The file content provided in the last read_files shows this structure:
+        // function handleIntersection(entries, observerInstance) {
+        //    entries.forEach(entry => {
+        //        if (entry.isIntersecting) { // This 'if' is from my analysis, not the actual code block that had the error.
+        //            const wrapper = entry.target;
+        //            const iframe = wrapper.querySelector('iframe'); // First
+        //            const iframe = wrapper.querySelector('iframe'); // Second - THIS IS THE ERROR
+        //
+        //            if (iframe) { ...
+        // Let's correct based on the actual problematic code block.
+        // The `if (entry.isIntersecting)` was part of my *description* of the error location,
+        // not necessarily the code structure itself that contained the double declaration.
+        // The actual error is simpler: two `const iframe` lines back-to-back.
 
-        // Inject CSS for anchored messages
-        const styleElement = document.createElement('style');
-        styleElement.textContent = `
-            .${ANCHORED_MESSAGE_CLASS} {
-                background-color: #4a4a3a !important; /* Slightly noticeable dark yellow/greenish */
-                border: 1px solid #FFD700 !important;
-                /* Add other styles if needed, e.g., box-shadow */
+            const wrapper = entry.target;
+            const iframe = wrapper.querySelector('iframe'); // Keep this one
+
+            // const iframe = wrapper.querySelector('iframe'); // REMOVE THIS REDECLARATION
+
+            if (iframe) { // Ensure iframe exists
+                if (entry.isIntersecting) {
+                    // Element is now visible
+                    if (iframe.dataset.src && (!iframe.src || iframe.src === 'about:blank')) {
+                        consoleLog('[LazyLoad] Loading iframe for:', iframe.dataset.src);
+                        iframe.src = iframe.dataset.src;
+                        // Do NOT unobserve: observerInstance.unobserve(wrapper);
+                        // We want to keep observing to handle scroll-out for unloading.
+                    }
+                } else {
+                    // Element is no longer visible
+                    if (iframe.src && iframe.src !== 'about:blank') {
+                        consoleLog('[LazyLoad] Unloading iframe (scrolled out of view):', iframe.src);
+                        // Attempt to pause YouTube videos via postMessage (best effort)
+                        if (iframe.src.includes("youtube.com/embed")) {
+                            try {
+                                iframe.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', 'https://www.youtube.com');
+                            } catch (e) {
+                                consoleWarn('[LazyLoad] Error attempting to postMessage pause to YouTube:', e);
+                            }
+                        }
+                        // For other platforms, pausing via postMessage is less standardized or might require their specific player APIs.
+                        // This part would need expansion for Twitch, Streamable, Rumble if simple src reset isn't enough.
+
+                        iframe.src = 'about:blank'; // Unload the content to save resources
+                        // The data-src attribute remains, so it can be reloaded if it scrolls back into view.
+                    }
+                }
             }
-        `;
-        document.head.appendChild(styleElement);
-        consoleLog("Injected CSS for anchored messages.");
+        // REMOVED EXTRA CLOSING BRACE HERE
+    });
+}
 
-        consoleLog('Attempting to call setupLoadingScreen...');
-        setupLoadingScreen(); // Create loading screen elements early
-        consoleLog('Call to setupLoadingScreen finished.');
-        ensureViewerExists(); // Ensure viewer div is in DOM early
+// --- Initial Actions / Main Execution ---
+async function main() {
+    consoleLog("Starting OTK Thread Tracker script (v2.7)...");
 
-        try {
-            await initDB();
+    // Inject CSS for anchored messages
+    const styleElement = document.createElement('style');
+    styleElement.textContent = `
+        .${ANCHORED_MESSAGE_CLASS} {
+            background-color: #4a4a3a !important; /* Slightly noticeable dark yellow/greenish */
+            border: 1px solid #FFD700 !important;
+            /* Add other styles if needed, e.g., box-shadow */
+        }
+            .otk-youtube-embed-wrapper.otk-embed-inline {
+                /* max-width and margins are now controlled by inline styles in createYouTubeEmbedElement */
+                /* This class can be used for other common styles for these embeds if needed */
+            }
+    `;
+    document.head.appendChild(styleElement);
+    consoleLog("Injected CSS for anchored messages.");
+
+    consoleLog('Attempting to call setupLoadingScreen...');
+    setupLoadingScreen(); // Create loading screen elements early
+    consoleLog('Call to setupLoadingScreen finished.');
+    ensureViewerExists(); // Ensure viewer div is in DOM early
+
+    // Note: mediaIntersectionObserver itself is initialized within renderMessagesInViewer
+
+    try {
+        await initDB();
             consoleLog("IndexedDB initialization attempt complete.");
 
             // Recalculate and display initial media stats
