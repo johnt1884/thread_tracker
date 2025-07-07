@@ -313,8 +313,8 @@
             left: 0;
             width: 100vw;
             z-index: 9999;
-            border-bottom: 1px solid #FFD700; /* Pastille Gold */
-            background: #181818; /* New background color */
+            border-bottom: 1px solid #181818; /* Original color, to match original background */
+            background: #181818; /* Original background color */
             box-sizing: border-box;
         `;
 
@@ -322,7 +322,7 @@
         otkGui.id = 'otk-tracker-gui';
         otkGui.style.cssText = `
             height: 85px;
-            color: #e6e6e6; /* New font color */
+            color: #e6e6e6; /* Original font color */
             font-family: Verdana, sans-serif;
             font-size: 14px;
             padding: 5px 25px;
@@ -600,6 +600,15 @@
 
 
     // --- Utility functions ---
+    function blobToDataURL(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    }
+
     function padNumber(num, length) {
         return String(num).padStart(length, '0');
     }
@@ -1008,13 +1017,17 @@
         const messagesContainer = document.createElement('div');
         messagesContainer.id = 'otk-messages-container';
         messagesContainer.style.cssText = `
-            width: 100%; /* Fill parent (otkViewer's content box) */
-            height: 100%; /* Fill parent */
-            overflow-y: auto;
-            padding-right: 20px; /* Adjusted for symmetrical content padding (target 35px effective) */
-            box-sizing: border-box; /* Ensure padding is included in width/height */
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            overflow-y: auto; /* This container scrolls */
+            padding: 10px 25px; /* 10px top/bottom, 25px left/right for content and scrollbar */
+            box-sizing: border-box;
+            /* width and height are now controlled by absolute positioning */
         `;
-        // Note: maxHeight was 'calc(100% - 20px)' before. Now using height 100% of otkViewer's content area.
+        // Note: otk-messages-container now fills otk-viewer and handles all padding and scrolling.
         // otkViewer has 10px top/bottom padding, so messagesContainer effectively has that spacing.
 
         const totalMessages = allMessages.length;
@@ -1099,37 +1112,46 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
 
     // Signature includes isTopLevelMessage, currentDepth, and threadColor
     function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor) {
+        consoleLog(`[DepthCheck] Rendering message: ${message.id}, currentDepth: ${currentDepth}, MAX_QUOTE_DEPTH: ${MAX_QUOTE_DEPTH}, isTopLevel: ${isTopLevelMessage}`);
         const messageDiv = document.createElement('div');
         messageDiv.setAttribute('data-message-id', message.id);
 
-        let backgroundColor = '#343434'; // Default for top-level
+        let backgroundColor;
         let borderLeftStyle = 'none';
         let marginLeft = '0';
-        let padding = '10px'; // Default padding
-        let paddingLeft = '12px'; // Default left padding
+        let paddingLeft = '10px'; // Default to 10px, adjusted below
+        let marginTop = '15px'; // Default top margin
+        let marginBottom = '15px'; // Default bottom margin
+        const messageTextColor = '#e6e6e6'; // Original light text color
 
-        if (isTopLevelMessage) {
+        if (isTopLevelMessage) { // Depth 0
+            backgroundColor = '#343434'; // Original top-level background
             borderLeftStyle = threadColor ? `4px solid ${threadColor}` : '4px solid red'; // Use threadColor, fallback to red
-            paddingLeft = '8px'; // Accommodate border
-        } else { // Quoted message
-            backgroundColor = (currentDepth === 1) ? '#525252' : '#484848'; // Level 1 quote: #525252, Level 2 quote: #484848
-            marginLeft = '15px'; // Indent quoted messages
-            // Standard padding for quoted messages, borderLeftStyle remains 'none'
-            paddingLeft = '10px'; // Reset to standard if no border
+            // marginLeft, marginTop, marginBottom remain defaults for top-level
+        } else { // Quoted message (Depth 1+)
+            marginLeft = '0px'; // No specific indent margin for quote itself
+            marginTop = '10px';    // Specific top margin for quoted messages
+            marginBottom = '0px';  // Specific bottom margin for quoted messages
+            if (currentDepth === 1) {
+                backgroundColor = '#525252'; // Original first quote background
+            } else { // Covers currentDepth === 2 and potential deeper fallbacks
+                backgroundColor = '#484848'; // Original second quote (and deeper) background
+            }
         }
 
 messageDiv.style.cssText = `
     box-sizing: border-box;
     display: block;
     background-color: ${backgroundColor};
-    color: #e6e6e6;
+    color: ${messageTextColor}; /* Reverted text color */
 
-    margin: 15px 0;
+    margin-top: ${marginTop};
+    margin-bottom: ${marginBottom};
     margin-left: ${marginLeft};
     padding-top: 10px;
     padding-bottom: 10px;
     padding-left: ${paddingLeft};
-    padding-right: 12px;
+    padding-right: 10px; /* Standardized to 10px */
 
     border-left: ${borderLeftStyle};
     border-radius: 5px;
@@ -1143,13 +1165,19 @@ messageDiv.style.cssText = `
 
 
         const messageHeader = document.createElement('div');
+
+        let headerBorderColor = '#555'; // Original default border
+        if (currentDepth === 1) {
+            headerBorderColor = '#343434'; // Original border for depth 1
+        }
+
         messageHeader.style.cssText = `
             font-size: 12px;
-            color: #e6e6e6;
+            color: ${messageTextColor}; /* Reverted text color (now #e6e6e6) */
             font-weight: bold;
             margin-bottom: 8px;
             padding-bottom: 5px;
-            border-bottom: 1px solid #555;
+            border-bottom: 1px solid ${headerBorderColor};
             display: flex;
             align-items: center;
             width: 100%;
@@ -1158,26 +1186,26 @@ messageDiv.style.cssText = `
         const timestampParts = formatTimestampForHeader(message.time);
 
         if (isTopLevelMessage) {
-            messageHeader.style.justifyContent = 'space-between'; // For centered time
+            messageHeader.style.justifyContent = 'space-between'; // For ID+Time (left) and Date (right)
             const idSpan = document.createElement('span');
-            idSpan.textContent = `#${message.id}`;
+            idSpan.textContent = `#${message.id} | ${timestampParts.time}`; // Combined ID and Time
 
-            const timeSpan = document.createElement('span');
-            timeSpan.textContent = timestampParts.time;
-            timeSpan.style.textAlign = 'center';
-            timeSpan.style.flexGrow = '1';
+            // const timeSpan = document.createElement('span'); // Removed
+            // timeSpan.textContent = timestampParts.time;
+            // timeSpan.style.textAlign = 'center';
+            // timeSpan.style.flexGrow = '1';
 
             const dateSpan = document.createElement('span');
             dateSpan.textContent = timestampParts.date;
-            dateSpan.style.paddingRight = '5px';
+            // dateSpan.style.paddingRight = '5px'; // Padding might not be needed or can be adjusted
 
             messageHeader.appendChild(idSpan);
-            messageHeader.appendChild(timeSpan);
+            // messageHeader.appendChild(timeSpan); // Removed
             messageHeader.appendChild(dateSpan);
         } else { // Simplified header for quoted messages
             messageHeader.style.justifyContent = 'flex-start'; // Align ID to the start
             const idSpan = document.createElement('span');
-            idSpan.textContent = `#${message.id}`;
+            idSpan.textContent = `>>${message.id}`; // Changed prefix for quoted messages
             // Time and Date spans are intentionally omitted for quoted messages
             messageHeader.appendChild(idSpan);
         }
@@ -1186,74 +1214,79 @@ messageDiv.style.cssText = `
         const textElement = document.createElement('div');
         textElement.style.whiteSpace = 'pre-wrap'; // Preserve line breaks
         textElement.style.overflowWrap = 'break-word'; // Allow breaking normally unbreakable words
-        textElement.style.wordBreak = 'break-all'; // More aggressive word breaking if needed
+        textElement.style.wordBreak = 'normal'; // Prefer whole word wrapping
 
         if (message.text && typeof message.text === 'string') {
             const lines = message.text.split('\n');
             const quoteRegex = /^>>(\d+)/;
 
-            lines.forEach((line, index) => {
+            lines.forEach((line, lineIndex) => {
                 const quoteMatch = line.match(quoteRegex);
-                if (quoteMatch && currentDepth < MAX_QUOTE_DEPTH) {
-                    const quotedMessageId = quoteMatch[1];
-                    let quotedMessageObject = null;
-                    for (const threadIdKey in messagesByThreadId) {
-                        if (messagesByThreadId.hasOwnProperty(threadIdKey)) {
-                            const foundMsg = messagesByThreadId[threadIdKey].find(m => m.id === Number(quotedMessageId));
-                            if (foundMsg) {
-                                quotedMessageObject = foundMsg;
-                                break;
+
+                if (currentDepth >= MAX_QUOTE_DEPTH) {
+                    // At max depth (or beyond, though shouldn't happen with correct recursion control)
+                    if (quoteMatch) {
+                        // This is a >>link at max depth, skip it entirely.
+                        return; // Skips this iteration of lines.forEach
+                    } else {
+                        // Not a quote link, so it's regular text. Render it.
+                        textElement.appendChild(document.createTextNode(line));
+                        if (lineIndex < lines.length - 1) {
+                            textElement.appendChild(document.createElement('br'));
+                        }
+                    }
+                } else { // currentDepth < MAX_QUOTE_DEPTH
+                    if (quoteMatch) {
+                        // It's a >>link and we are allowed to recurse further.
+                        const quotedMessageId = quoteMatch[1];
+                        let quotedMessageObject = null;
+                        for (const threadIdKey in messagesByThreadId) {
+                            if (messagesByThreadId.hasOwnProperty(threadIdKey)) {
+                                const foundMsg = messagesByThreadId[threadIdKey].find(m => m.id === Number(quotedMessageId));
+                                if (foundMsg) {
+                                    quotedMessageObject = foundMsg;
+                                    break;
+                                }
                             }
                         }
-                    }
 
-                    if (quotedMessageObject) {
-                        const quotedElement = createMessageElementDOM(
-                            quotedMessageObject,
-                            [], // mediaLoadPromises for nested calls - typically empty as parent handles Promise.all
-                            uniqueImageViewerHashes, // Pass global sets for stats
-                            uniqueVideoViewerHashes, // Pass global sets for stats
-                            quotedMessageObject.board || 'b',
-                            false, // isTopLevelMessage = false for quotes
-                            currentDepth + 1,
-                            null // threadColor is not used for quoted message accents
-                        );
-                        if (quotedElement) {
-                            textElement.appendChild(quotedElement);
+                        if (quotedMessageObject) {
+                            const quotedElement = createMessageElementDOM(
+                                quotedMessageObject,
+                                [], // mediaLoadPromises - see note in plan about this if issues persist
+                                uniqueImageViewerHashes,
+                                uniqueVideoViewerHashes,
+                                quotedMessageObject.board || 'b',
+                                false, // isTopLevelMessage = false for quotes
+                                currentDepth + 1,
+                                null // threadColor is not used for quoted message accents
+                            );
+                            if (quotedElement) {
+                                textElement.appendChild(quotedElement);
+                            }
+                        } else {
+                            const notFoundSpan = document.createElement('span');
+                            notFoundSpan.textContent = `>>${quotedMessageId} (Not Found)`;
+                            notFoundSpan.style.color = '#88ccee';
+                            notFoundSpan.style.textDecoration = 'underline';
+                            textElement.appendChild(notFoundSpan);
+                        }
+
+                        const restOfLine = line.substring(quoteMatch[0].length).trim();
+                        if (restOfLine) {
+                            const restOfLineSpan = document.createElement('span');
+                            restOfLineSpan.textContent = " " + restOfLine;
+                            textElement.appendChild(restOfLineSpan);
+                        }
+                        if (lineIndex < lines.length - 1 || restOfLine) {
+                            textElement.appendChild(document.createElement('br'));
                         }
                     } else {
-                        const notFoundSpan = document.createElement('span');
-                        // Style like a quote link, even if not found, or just plain text
-                        notFoundSpan.textContent = `>>${quotedMessageId} (Not Found)`;
-                        notFoundSpan.style.color = '#88ccee'; // Similar to 4chan's quote link color
-                        notFoundSpan.style.textDecoration = 'underline';
-                        textElement.appendChild(notFoundSpan);
-                    }
-
-                    // Append any text on the quote line after the quote itself
-                    const restOfLine = line.substring(quoteMatch[0].length).trim();
-                    if (restOfLine) {
-                        const restOfLineSpan = document.createElement('span');
-                        restOfLineSpan.textContent = " " + restOfLine;
-                        textElement.appendChild(restOfLineSpan);
-                    }
-                    // Add a line break after a processed quote line unless it's the very last line overall
-                    if (index < lines.length -1 || restOfLine) { // Add br if not last line, or if there was text after quote
-                         textElement.appendChild(document.createElement('br'));
-                    }
-
-                } else if (quoteMatch && currentDepth >= MAX_QUOTE_DEPTH) {
-                    // Max depth reached, just display the quote link as text
-                    const quoteLinkText = document.createTextNode(line);
-                    textElement.appendChild(quoteLinkText);
-                    if (index < lines.length - 1) { // Add <br> if not the last line
-                       textElement.appendChild(document.createElement('br'));
-                    }
-                }
-                else { // Not a quote line or max depth exceeded for this path
-                    textElement.appendChild(document.createTextNode(line));
-                     if (index < lines.length - 1) { // Add <br> if not the last line
-                       textElement.appendChild(document.createElement('br'));
+                        // Not a quote link, and not at max depth. Regular text.
+                        textElement.appendChild(document.createTextNode(line));
+                        if (lineIndex < lines.length - 1) {
+                            textElement.appendChild(document.createElement('br'));
+                        }
                     }
                 }
             });
@@ -1333,8 +1366,8 @@ messageDiv.style.cssText = `
                 img.style.borderRadius = '3px';
 
 
-                const setupInitialImageState = (objectURL) => {
-                    img.dataset.fullSrc = objectURL || `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower}`; // Fallback to web URL if no objectURL
+                const setupInitialImageState = (dataUrlOrFallback) => { // Parameter is now dataUrl or a fallback web URL
+                    img.dataset.fullSrc = dataUrlOrFallback; // Store the dataURL or the web URL
 
                     if (img.dataset.isThumbnail === 'true') {
                         img.src = img.dataset.thumbSrc;
@@ -1353,6 +1386,7 @@ messageDiv.style.cssText = `
                 };
 
                 img.addEventListener('click', () => {
+                    // consoleLog(`Image clicked: msgId=${message.id}, filehash=${filehash}, isThumbnail=${img.dataset.isThumbnail}, fullSrc=${img.dataset.fullSrc}`); // Logging removed
                     const currentlyThumbnail = img.dataset.isThumbnail === 'true';
                     if (currentlyThumbnail) { // Toggle to full
                         img.src = img.dataset.fullSrc;
@@ -1379,15 +1413,21 @@ messageDiv.style.cssText = `
                         request.onsuccess = (event) => {
                             const storedItem = event.target.result;
                             if (storedItem && storedItem.blob) {
-                                const objectURL = URL.createObjectURL(storedItem.blob);
-                                img.onload = () => URL.revokeObjectURL(objectURL); // Revoke once displayed if it's the one used
-                                img.onerror = () => URL.revokeObjectURL(objectURL); // Also on error
-                                setupInitialImageState(objectURL);
+                                blobToDataURL(storedItem.blob)
+                                    .then(dataURL => {
+                                        setupInitialImageState(dataURL);
+                                        resolveMedia();
+                                    })
+                                    .catch(err => {
+                                        consoleError(`Error converting blob to Data URL for ${message.attachment.localStoreId}:`, err);
+                                        setupInitialImageState(null); // Fallback to web URL
+                                        resolveMedia();
+                                    });
                             } else {
                                 consoleWarn(`Blob not found in IDB for ${message.attachment.localStoreId}. Using web URLs.`);
                                 setupInitialImageState(null); // Will use web URL as fallback
+                                resolveMedia();
                             }
-                            resolveMedia();
                         };
                         request.onerror = (event) => {
                             consoleError(`Error fetching media ${message.attachment.localStoreId} from IDB:`, event.target.error);
@@ -1402,13 +1442,15 @@ messageDiv.style.cssText = `
                 attachmentDiv.appendChild(img);
 
             } else if (['.webm', '.mp4'].includes(extLower)) {
-                // Video handling (remains largely unchanged)
+                // Video handling: CSP might also affect blobs for videos.
+                // For now, let's assume videos are less common or direct 4cdn links are fine.
+                // If videos also break, they'll need similar dataURL or a different strategy.
                 let videoSrc = null;
                 const setupVideo = (src) => {
                     const videoElement = document.createElement('video');
-                    if (src) { // src could be an objectURL or a web URL
-                        videoElement.onloadeddata = () => { if (src.startsWith('blob:')) URL.revokeObjectURL(src); };
-                        videoElement.onerror = () => { if (src.startsWith('blob:')) URL.revokeObjectURL(src); };
+                    if (src && src.startsWith('blob:')) { // Only revoke if it's a blob URL
+                        videoElement.onloadeddata = () => URL.revokeObjectURL(src);
+                        videoElement.onerror = () => URL.revokeObjectURL(src);
                     }
                     videoElement.src = src || `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower}`; // Fallback
                     videoElement.controls = true;
@@ -2017,15 +2059,16 @@ messageDiv.style.cssText = `
             background-color: #181818; /* New background color */
             opacity: 1; /* Ensure full opacity */
             z-index: 9998;
-            /* overflow-y: auto; */ /* Removed: messagesContainer will handle scroll */
+            /* overflow-y: hidden; */ /* Ensure viewer itself doesn't show scrollbars */
             box-sizing: border-box;
-            color: #e6e6e6; /* New default text color for viewer */
-            padding: 10px 5px 10px 25px; /* Mirror otk-gui horizontal padding, reduced right padding for scrollbar */
-            border-top: 1px solid #FFD700; /* Match GUI divider */
+            background-color: #181818; /* Original viewer background */
+            color: #e6e6e6; /* Original default text color for viewer */
+            padding: 0; /* No padding, will be handled by messagesContainer */
+            border-top: 1px solid #181818; /* Original border, to match original GUI background */
             display: none;
             overflow-x: hidden; /* Prevent horizontal scrollbar on the viewer itself */
         `;
-        consoleLog("Applied basic styling to otkViewer: background #181818, default text color #e6e6e6, padding 10px 25px, border-top #FFD700, overflow-x: hidden.");
+        consoleLog("Applied basic styling to otkViewer: background #181818, default text color #e6e6e6, padding (0), border-top #181818, overflow-x: hidden.");
     }
 
     function toggleViewer() {
