@@ -35,7 +35,9 @@
     let lastViewerScrollTop = 0; // To store scroll position
     let renderedMessageIdsInViewer = new Set(); // To track IDs in viewer for incremental updates
     let uniqueImageViewerHashes = new Set(); // Global set for viewer's unique image hashes
-    let uniqueVideoViewerHashes = new Set(); // Global set for viewer's unique video hashes
+    // let uniqueVideoViewerHashes = new Set(); // Removed as obsolete
+    let viewerTopLevelAttachedVideoHashes = new Set(); // Viewer session: Hashes of ATTACHED videos in top-level messages
+    let viewerTopLevelEmbedIds = new Set(); // Viewer session: Canonical IDs of EMBEDDED videos in top-level messages
     let renderedFullSizeImageHashes = new Set(); // Tracks image hashes already rendered full-size in current viewer session
     let mediaIntersectionObserver = null; // For lazy loading embeds
 
@@ -256,7 +258,7 @@ function createYouTubeEmbedElement(videoId, timestampStr) { // Removed isInlineE
 }
 
 // Helper function for processing text segments (either append as text or handle as quote)
-function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, mediaLoadPromises) {
+function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises) {
     // Note: mediaLoadPromises is passed down in case quote recursion generates media elements that need tracking.
     // However, createMessageElementDOM for quotes currently passes an empty array for it. This could be enhanced.
     const quoteMatch = segment.match(quoteRegex);
@@ -291,7 +293,7 @@ function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth
                 quotedMessageObject,
                 mediaLoadPromises, // Pass down mediaLoadPromises
                 uniqueImageViewerHashes,
-                uniqueVideoViewerHashes,
+                // uniqueVideoViewerHashes, // Removed
                 quotedMessageObject.board || boardForLink,
                 false, // isTopLevelMessage = false for quotes
                 currentDepth + 1,
@@ -312,7 +314,7 @@ function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth
         if (restOfSegment.length > 0) {
             // Recursively process the rest of the segment for more quotes or text
             // This is important if a line is like ">>123 >>456 text"
-            appendTextOrQuoteSegment(textElement, restOfSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, mediaLoadPromises);
+            appendTextOrQuoteSegment(textElement, restOfSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
         }
     } else {
         // Not a quote at the start of the segment (or not a quote at all), just plain text for this segment
@@ -557,8 +559,8 @@ function createStreamableEmbedElement(videoId) {
             left: 0;
             width: 100vw;
             z-index: 9999;
-            border-bottom: 1px solid #181818; /* Original color, to match original background */
-            background: #181818; /* Original background color */
+            border-bottom: 1px solid var(--otk-gui-bottom-border-color);
+            background: var(--otk-gui-bg-color);
             box-sizing: border-box;
         `;
 
@@ -566,7 +568,7 @@ function createStreamableEmbedElement(videoId) {
         otkGui.id = 'otk-tracker-gui';
         otkGui.style.cssText = `
             height: 85px;
-            color: #e6e6e6; /* Original font color */
+            color: var(--otk-gui-text-color); /* This is now for general GUI text */
             font-family: Verdana, sans-serif;
             font-size: 14px;
             padding: 5px 25px;
@@ -617,8 +619,32 @@ function createStreamableEmbedElement(videoId) {
         otkThreadTitleDisplay.style.cssText = `
             font-weight: bold;
             font-size: 14px;
+            /* margin-bottom will be handled by titleContainer */
+            display: inline; /* To allow cog to sit next to it */
+            color: var(--otk-title-text-color); /* Apply specific color variable */
+        `;
+
+        const cogIcon = document.createElement('span');
+        cogIcon.id = 'otk-settings-cog';
+        cogIcon.innerHTML = '&#x2699;'; // Gear icon ⚙️
+        cogIcon.style.cssText = `
+            font-size: 16px;
+            margin-left: 10px;
+            cursor: pointer;
+            display: inline-block; /* Allows margin and proper alignment */
+            vertical-align: middle; /* Aligns cog with text better */
+        `;
+        cogIcon.title = "Open Settings";
+
+        const titleContainer = document.createElement('div');
+        titleContainer.style.cssText = `
+            display: flex;
+            align-items: center;
+            justify-content: center; /* Center title and cog */
             margin-bottom: 4px;
         `;
+        titleContainer.appendChild(otkThreadTitleDisplay);
+        titleContainer.appendChild(cogIcon);
 
         const otkStatsDisplay = document.createElement('div');
         otkStatsDisplay.id = 'otk-stats-display';
@@ -636,30 +662,35 @@ function createStreamableEmbedElement(videoId) {
         threadsTrackedStat.textContent = 'Live Threads: 0';
         threadsTrackedStat.style.textAlign = 'left';
         threadsTrackedStat.style.minWidth = '150px';
+        threadsTrackedStat.style.color = 'var(--otk-stats-text-color)';
 
         const totalMessagesStat = document.createElement('span');
         totalMessagesStat.id = 'otk-total-messages-stat';
         totalMessagesStat.textContent = 'Total Messages: 0';
         totalMessagesStat.style.textAlign = 'left';
         totalMessagesStat.style.minWidth = '150px';
+        totalMessagesStat.style.color = 'var(--otk-stats-text-color)';
 
         const localImagesStat = document.createElement('span');
         localImagesStat.id = 'otk-local-images-stat';
         localImagesStat.textContent = 'Local Images: 0';
         localImagesStat.style.textAlign = 'left';
         localImagesStat.style.minWidth = '150px';
+        localImagesStat.style.color = 'var(--otk-stats-text-color)';
 
         const localVideosStat = document.createElement('span');
         localVideosStat.id = 'otk-local-videos-stat';
         localVideosStat.textContent = 'Local Videos: 0';
         localVideosStat.style.textAlign = 'left';
         localVideosStat.style.minWidth = '150px';
+        localVideosStat.style.color = 'var(--otk-stats-text-color)';
 
         otkStatsDisplay.appendChild(threadsTrackedStat);
         otkStatsDisplay.appendChild(totalMessagesStat);
         otkStatsDisplay.appendChild(localImagesStat);
         otkStatsDisplay.appendChild(localVideosStat);
-        centerInfoContainer.appendChild(otkThreadTitleDisplay);
+        // centerInfoContainer.appendChild(otkThreadTitleDisplay); // Replaced by titleContainer
+        centerInfoContainer.appendChild(titleContainer); // Add the container with title and cog
         centerInfoContainer.appendChild(otkStatsDisplay);
         otkGui.appendChild(centerInfoContainer);
 
@@ -686,7 +717,7 @@ function createStreamableEmbedElement(videoId) {
             // Apply styles as in initial creation
             otkGui.style.cssText = `
                 height: 85px;
-                color: white;
+                color: var(--otk-gui-text-color); /* This is now for general GUI text */
                 font-family: Verdana, sans-serif;
                 font-size: 14px;
                 padding: 5px 25px;
@@ -742,7 +773,27 @@ function createStreamableEmbedElement(videoId) {
             const otkThreadTitleDisplay = document.createElement('div');
             otkThreadTitleDisplay.id = 'otk-thread-title-display';
             otkThreadTitleDisplay.textContent = 'Thread Tracker 2.7'; // Updated version
-            otkThreadTitleDisplay.style.cssText = `font-weight: bold; font-size: 14px; margin-bottom: 4px;`;
+            otkThreadTitleDisplay.style.cssText = `
+                font-weight: bold; font-size: 14px; display: inline;
+                color: var(--otk-title-text-color); /* Apply specific color variable */
+            `; // Removed margin-bottom, display inline
+
+            const cogIcon = document.createElement('span');
+            cogIcon.id = 'otk-settings-cog'; // Ensure ID is consistent if needed for re-binding
+            cogIcon.innerHTML = '&#x2699;';
+            cogIcon.style.cssText = `
+                font-size: 16px; margin-left: 10px; cursor: pointer; display: inline-block; vertical-align: middle;
+            `;
+            cogIcon.title = "Open Settings";
+            // Note: Event listener for cog a V2 feature, or needs to be re-attached if GUI is rebuilt this way.
+            // For now, just ensuring structure. If setupOptionsWindow is called after this, it might re-bind.
+
+            const titleContainer = document.createElement('div');
+            titleContainer.style.cssText = `
+                display: flex; align-items: center; justify-content: center; margin-bottom: 4px;
+            `;
+            titleContainer.appendChild(otkThreadTitleDisplay);
+            titleContainer.appendChild(cogIcon);
 
             const otkStatsDisplay = document.createElement('div');
             otkStatsDisplay.id = 'otk-stats-display';
@@ -760,30 +811,35 @@ function createStreamableEmbedElement(videoId) {
             threadsTrackedStat.textContent = 'Live Threads: 0';
             threadsTrackedStat.style.textAlign = 'left';
             threadsTrackedStat.style.minWidth = '150px';
+            threadsTrackedStat.style.color = 'var(--otk-stats-text-color)';
 
             const totalMessagesStat = document.createElement('span');
             totalMessagesStat.id = 'otk-total-messages-stat';
             totalMessagesStat.textContent = 'Total Messages: 0';
             totalMessagesStat.style.textAlign = 'left';
             totalMessagesStat.style.minWidth = '150px';
+            totalMessagesStat.style.color = 'var(--otk-stats-text-color)';
 
             const localImagesStat = document.createElement('span');
             localImagesStat.id = 'otk-local-images-stat';
             localImagesStat.textContent = 'Local Images: 0'; // Added for consistency
             localImagesStat.style.textAlign = 'left';
             localImagesStat.style.minWidth = '150px';
+            localImagesStat.style.color = 'var(--otk-stats-text-color)';
 
             const localVideosStat = document.createElement('span');
             localVideosStat.id = 'otk-local-videos-stat';
             localVideosStat.textContent = 'Local Videos: 0'; // Added for consistency
             localVideosStat.style.textAlign = 'left';
             localVideosStat.style.minWidth = '150px';
+            localVideosStat.style.color = 'var(--otk-stats-text-color)';
 
             otkStatsDisplay.appendChild(threadsTrackedStat);
             otkStatsDisplay.appendChild(totalMessagesStat);
             otkStatsDisplay.appendChild(localImagesStat); // Added for consistency
             otkStatsDisplay.appendChild(localVideosStat); // Added for consistency
-            centerInfoContainer.appendChild(otkThreadTitleDisplay);
+            // centerInfoContainer.appendChild(otkThreadTitleDisplay); // Replaced
+            centerInfoContainer.appendChild(titleContainer); // Add new container
             centerInfoContainer.appendChild(otkStatsDisplay);
 
 
@@ -967,7 +1023,7 @@ function createStreamableEmbedElement(videoId) {
             titleLink.textContent = truncateTitleWithWordBoundary(fullTitle, 40); // Max length adjusted
             titleLink.title = fullTitle;
             let titleLinkStyle = `
-                color: #e0e0e0;
+                color: var(--otk-gui-threadlist-title-color);
                 text-decoration: none;
                 font-weight: bold;
                 font-size: 12px;
@@ -986,7 +1042,7 @@ function createStreamableEmbedElement(videoId) {
             timestampSpan.textContent = formattedTimestamp;
             let timestampSpanStyle = `
                 font-size: 10px;
-                color: #aaa;
+                color: var(--otk-gui-threadlist-time-color);
                 margin-left: 5px;
             `;
 
@@ -1239,9 +1295,11 @@ function createStreamableEmbedElement(videoId) {
         // Clear state for full rebuild (using global sets)
         renderedMessageIdsInViewer.clear();
         uniqueImageViewerHashes.clear(); // Now clearing the global set
-        uniqueVideoViewerHashes.clear(); // Now clearing the global set
+        // uniqueVideoViewerHashes.clear(); // Removed as the set itself will be removed
+        viewerTopLevelAttachedVideoHashes.clear(); // Clear new set for attached videos in top-level messages
+        viewerTopLevelEmbedIds.clear(); // Clear new set for embeds in top-level messages
         renderedFullSizeImageHashes.clear(); // Clear for new viewer session
-        consoleLog("[renderMessagesInViewer] Cleared renderedMessageIdsInViewer, global unique media hashes, and renderedFullSizeImageHashes for full rebuild.");
+        consoleLog("[renderMessagesInViewer] Cleared renderedMessageIdsInViewer, unique image hashes, top-level video tracking sets, and renderedFullSizeImageHashes for full rebuild.");
 
         otkViewer.innerHTML = ''; // Clear previous content
 
@@ -1336,7 +1394,7 @@ function createStreamableEmbedElement(videoId) {
 
             // Use the helper function to create the message element
             // For messages directly in the viewer, isTopLevelMessage is true, currentDepth is 0
-            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, true, 0, threadColor);
+            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor);
             messagesContainer.appendChild(messageElement);
 
             messagesProcessed++;
@@ -1347,7 +1405,7 @@ function createStreamableEmbedElement(videoId) {
 
 // After processing all messages, update global viewer counts
 consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHashes.size}`, uniqueImageViewerHashes);
-consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHashes.size}`, uniqueVideoViewerHashes);
+// consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHashes.size}`, uniqueVideoViewerHashes); // Removed due to uniqueVideoViewerHashes being obsolete
 // viewerActiveImageCount = uniqueImageViewerHashes.size; // MOVED TO AFTER PROMISES
 // viewerActiveVideoCount = uniqueVideoViewerHashes.size; // MOVED TO AFTER PROMISES
 // updateDisplayedStatistics(); // Refresh stats display -- MOVED TO AFTER PROMISES
@@ -1355,8 +1413,9 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
         Promise.all(mediaLoadPromises).then(() => {
             consoleLog("All inline media load attempts complete.");
             updateLoadingProgress(95, "Finalizing view...");
-    viewerActiveImageCount = uniqueImageViewerHashes.size; // MOVED HERE
-    viewerActiveVideoCount = uniqueVideoViewerHashes.size; // MOVED HERE
+    viewerActiveImageCount = uniqueImageViewerHashes.size;
+    viewerActiveVideoCount = viewerTopLevelAttachedVideoHashes.size + viewerTopLevelEmbedIds.size;
+    consoleLog(`[StatsDebug] Viewer counts updated: Images=${viewerActiveImageCount}, Videos (top-level attached + top-level embed)=${viewerActiveVideoCount}`);
     updateDisplayedStatistics(); // Update stats after all media processing is attempted.
 
             let anchorScrolled = false;
@@ -1403,7 +1462,7 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
     }
 
     // Signature includes isTopLevelMessage, currentDepth, and threadColor
-    function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor) {
+    function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor) {
         consoleLog(`[DepthCheck] Rendering message: ${message.id}, currentDepth: ${currentDepth}, MAX_QUOTE_DEPTH: ${MAX_QUOTE_DEPTH}, isTopLevel: ${isTopLevelMessage}`);
 
         // --- Define all media patterns once at the top of the function ---
@@ -1447,29 +1506,29 @@ consoleLog(`[StatsDebug] Unique video hashes for viewer: ${uniqueVideoViewerHash
         let paddingLeft = '10px'; // Default to 10px
         let marginTop = '15px'; // Default top margin
         let marginBottom = '15px'; // Default bottom margin
-        const messageTextColor = '#e6e6e6'; // Original light text color
+        const messageTextColor = '#e6e6e6'; // This will be replaced by depth-specific text color vars
         // let positionStyle = ''; // REMOVED - No longer needed for relative positioning
 
+        let backgroundColorVar;
         if (isTopLevelMessage) { // Depth 0
-            backgroundColor = '#343434'; // Original top-level background
-            // positionStyle = 'position: relative;'; // REMOVED - No longer needed for side rectangle
+            backgroundColorVar = 'var(--otk-msg-depth0-bg-color)';
             // marginLeft, marginTop, marginBottom remain defaults for top-level
         } else { // Quoted message (Depth 1+)
             marginLeft = '0px'; // No specific indent margin for quote itself
             marginTop = '10px';    // Specific top margin for quoted messages
             marginBottom = '0px';  // Specific bottom margin for quoted messages
             if (currentDepth === 1) {
-                backgroundColor = '#525252'; // Original first quote background
+                backgroundColorVar = 'var(--otk-msg-depth1-bg-color)';
             } else { // Covers currentDepth === 2 and potential deeper fallbacks
-                backgroundColor = '#484848'; // Original second quote (and deeper) background
+                backgroundColorVar = 'var(--otk-msg-depth2plus-bg-color)';
             }
         }
 
 messageDiv.style.cssText = `
     box-sizing: border-box;
     display: block;
-    background-color: ${backgroundColor};
-    color: ${messageTextColor}; /* Reverted text color */
+    background-color: ${backgroundColorVar};
+    color: ${ isTopLevelMessage ? 'var(--otk-msg-depth0-text-color)' : (currentDepth === 1 ? 'var(--otk-msg-depth1-text-color)' : 'var(--otk-msg-depth2plus-text-color)') };
     /* position: relative; REMOVED - No longer needed */
 
     margin-top: ${marginTop};
@@ -1494,18 +1553,23 @@ messageDiv.style.cssText = `
 
         const messageHeader = document.createElement('div');
 
-        let headerBorderColor = '#555'; // Original default border
-        if (currentDepth === 1) {
-            headerBorderColor = '#343434'; // Original border for depth 1
+        // Determine headerBorderColor using CSS variables
+        let headerBorderVar;
+        if (isTopLevelMessage) { // Depth 0
+            headerBorderVar = 'var(--otk-viewer-header-border-color)';
+        } else if (currentDepth === 1) { // Depth 1 quote
+            headerBorderVar = 'var(--otk-viewer-quote1-header-border-color)';
+        } else { // Deeper quotes can use the same as depth 1 or a new variable if desired later
+            headerBorderVar = 'var(--otk-viewer-quote1-header-border-color)';
         }
 
         messageHeader.style.cssText = `
             font-size: 12px;
-            color: ${messageTextColor}; /* Reverted text color (now #e6e6e6) */
+            color: ${ isTopLevelMessage ? 'var(--otk-msg-depth0-header-text-color)' : (currentDepth === 1 ? 'var(--otk-msg-depth1-header-text-color)' : 'var(--otk-msg-depth2plus-header-text-color)') };
             font-weight: bold;
             margin-bottom: 8px;
             padding-bottom: 5px;
-            border-bottom: 1px solid ${headerBorderColor};
+            border-bottom: 1px solid ${headerBorderVar};
             display: flex;
             align-items: center;
             width: 100%;
@@ -1564,6 +1628,7 @@ messageDiv.style.cssText = `
         textElement.style.whiteSpace = 'pre-wrap'; // Preserve line breaks
         textElement.style.overflowWrap = 'break-word'; // Allow breaking normally unbreakable words
         textElement.style.wordBreak = 'normal'; // Prefer whole word wrapping
+        textElement.style.fontSize = 'var(--otk-viewer-message-font-size)'; // Apply font size variable
 
         if (message.text && typeof message.text === 'string') {
             const lines = message.text.split('\n');
@@ -1589,15 +1654,19 @@ messageDiv.style.cssText = `
                             const timeMatch = trimmedLine.match(youtubeTimestampRegex);
                             if (timeMatch && timeMatch[1]) timestampStr = timeMatch[1];
                             if (videoId) {
-                                if (isTopLevelMessage) { // Only count for top-level messages
-                                    const canonicalEmbedId = `youtube_${videoId}`;
+                                const canonicalEmbedId = `youtube_${videoId}`;
+                                if (isTopLevelMessage) {
+                                    // Add to viewer-specific top-level set
+                                    viewerTopLevelEmbedIds.add(canonicalEmbedId);
+
+                                    // Existing global stat update logic (SEEN_EMBED_URL_IDS_KEY, LOCAL_VIDEO_COUNT_KEY)
                                     let seenEmbeds = JSON.parse(localStorage.getItem(SEEN_EMBED_URL_IDS_KEY)) || [];
                                     if (!seenEmbeds.includes(canonicalEmbedId)) {
                                         seenEmbeds.push(canonicalEmbedId);
                                         localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
                                         let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
                                         localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
-                                        updateDisplayedStatistics();
+                                        updateDisplayedStatistics(); // This updates global, not viewer-specific directly
                                     }
                                 }
                                 textElement.appendChild(createYouTubeEmbedElement(videoId, timestampStr));
@@ -1619,8 +1688,12 @@ messageDiv.style.cssText = `
                                 if (timeMatch && timeMatch[1]) timestampStr = timeMatch[1];
                             }
                             if (id) {
+                                const canonicalEmbedId = `twitch_${patternObj.type}_${id}`;
                                 if (isTopLevelMessage) {
-                                    const canonicalEmbedId = `twitch_${patternObj.type}_${id}`;
+                                    // Add to viewer-specific top-level set
+                                    viewerTopLevelEmbedIds.add(canonicalEmbedId);
+
+                                    // Existing global stat update logic
                                     let seenEmbeds = JSON.parse(localStorage.getItem(SEEN_EMBED_URL_IDS_KEY)) || [];
                                     if (!seenEmbeds.includes(canonicalEmbedId)) {
                                         seenEmbeds.push(canonicalEmbedId);
@@ -1645,8 +1718,12 @@ messageDiv.style.cssText = `
                             const videoId = match[patternObj.idGroup];
                             // Streamable doesn't have standard URL timestamps to parse here
                             if (videoId) {
+                                const canonicalEmbedId = `streamable_${videoId}`;
                                 if (isTopLevelMessage) {
-                                    const canonicalEmbedId = `streamable_${videoId}`;
+                                    // Add to viewer-specific top-level set
+                                    viewerTopLevelEmbedIds.add(canonicalEmbedId);
+
+                                    // Existing global stat update logic
                                     let seenEmbeds = JSON.parse(localStorage.getItem(SEEN_EMBED_URL_IDS_KEY)) || [];
                                     if (!seenEmbeds.includes(canonicalEmbedId)) {
                                         seenEmbeds.push(canonicalEmbedId);
@@ -1709,7 +1786,7 @@ messageDiv.style.cssText = `
                             processedAsEmbed = true;
 
                             if (earliestMatch.index > 0) {
-                                appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, mediaLoadPromises);
+                                appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
                             }
 
                             const matchedUrl = earliestMatch[0];
@@ -1742,7 +1819,11 @@ messageDiv.style.cssText = `
                             }
 
                             if (embedElement) {
-                                if (isTopLevelMessage && canonicalEmbedId) { // Check if it's a top-level message and we have an ID
+                                if (isTopLevelMessage && canonicalEmbedId) {
+                                    // Add to viewer-specific top-level set
+                                    viewerTopLevelEmbedIds.add(canonicalEmbedId);
+
+                                    // Existing global stat update logic
                                     let seenEmbeds = JSON.parse(localStorage.getItem(SEEN_EMBED_URL_IDS_KEY)) || [];
                                     if (!seenEmbeds.includes(canonicalEmbedId)) {
                                         seenEmbeds.push(canonicalEmbedId);
@@ -1758,7 +1839,7 @@ messageDiv.style.cssText = `
                             currentTextSegment = currentTextSegment.substring(earliestMatch.index + matchedUrl.length);
                         } else {
                             if (currentTextSegment.length > 0) {
-                                appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, mediaLoadPromises);
+                                appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
                             }
                             currentTextSegment = "";
                         }
@@ -1927,10 +2008,12 @@ messageDiv.style.cssText = `
                 let videoSrc = null;
                 const setupVideo = (src) => {
                     const videoElement = document.createElement('video');
-                    if (src && src.startsWith('blob:')) { // Only revoke if it's a blob URL
-                        videoElement.onloadeddata = () => URL.revokeObjectURL(src);
-                        videoElement.onerror = () => URL.revokeObjectURL(src);
-                    }
+                    // if (src && src.startsWith('blob:')) { // Only revoke if it's a blob URL
+                        // videoElement.onloadeddata = () => URL.revokeObjectURL(src); // Commented out for now
+                        // videoElement.onerror = () => URL.revokeObjectURL(src); // Commented out for now
+                    // }
+                    // Note: By not revoking, blob URLs will persist. This fixes playback after refresh/append,
+                    // but a more sophisticated memory management strategy for these URLs might be needed later.
                     videoElement.src = src || `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower}`; // Fallback
                     videoElement.controls = true;
                     videoElement.style.maxWidth = '100%';
@@ -1939,7 +2022,10 @@ messageDiv.style.cssText = `
                     videoElement.style.display = 'block';
                     attachmentDiv.appendChild(videoElement);
                     if (message.attachment.filehash_db_key) {
-                        uniqueVideoViewerHashes.add(message.attachment.filehash_db_key);
+                        if (isTopLevelMessage) {
+                            viewerTopLevelAttachedVideoHashes.add(message.attachment.filehash_db_key);
+                        }
+                        // uniqueVideoViewerHashes.add() removed as it's now obsolete for stats.
                     }
                 };
 
@@ -2017,7 +2103,7 @@ messageDiv.style.cssText = `
             const boardForLink = message.board || 'b';
             const threadColor = getThreadColor(message.originalThreadId); // Get thread color for accent
             // For messages directly appended to the viewer, isTopLevelMessage is true, currentDepth is 0
-            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, uniqueVideoViewerHashes, boardForLink, true, 0, threadColor);
+            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor);
             messagesContainer.appendChild(messageElement);
             renderedMessageIdsInViewer.add(message.id);
             consoleLog(`[appendNewMessagesToViewer] Appended message ${message.id}.`);
@@ -2037,7 +2123,8 @@ messageDiv.style.cssText = `
             consoleLog("[appendNewMessagesToViewer] Scroll position intentionally not adjusted after append.");
 
             viewerActiveImageCount = uniqueImageViewerHashes.size;
-            viewerActiveVideoCount = uniqueVideoViewerHashes.size;
+            viewerActiveVideoCount = viewerTopLevelAttachedVideoHashes.size + viewerTopLevelEmbedIds.size;
+            consoleLog(`[StatsDebug][appendNewMessagesToViewer] Viewer counts updated: Images=${viewerActiveImageCount}, Videos (top-level attached + top-level embed)=${viewerActiveVideoCount}`);
             updateDisplayedStatistics();
             consoleLog("[appendNewMessagesToViewer] Stats updated.");
 
@@ -2536,15 +2623,15 @@ messageDiv.style.cssText = `
             left: 0;
             width: 100vw;
             bottom: 0;
-            background-color: #181818; /* New background color */
+            /* background-color: #181818; */ /* New background color - replaced by variable below */
             opacity: 1; /* Ensure full opacity */
             z-index: 9998;
             /* overflow-y: hidden; */ /* Ensure viewer itself doesn't show scrollbars */
             box-sizing: border-box;
-            background-color: #181818; /* Original viewer background */
-            color: #e6e6e6; /* Original default text color for viewer */
+            background-color: var(--otk-viewer-bg-color); /* Original viewer background */
+            color: var(--otk-gui-text-color); /* Viewer default text color, can be same as GUI or new variable later */
             padding: 0; /* No padding, will be handled by messagesContainer */
-            border-top: 1px solid #181818; /* Original border, to match original GUI background */
+            border-top: 1px solid #181818; /* Assuming border might be different or themed later, keep for now */
             display: none;
             overflow-x: hidden; /* Prevent horizontal scrollbar on the viewer itself */
         `;
@@ -2880,6 +2967,1200 @@ function handleIntersection(entries, observerInstance) {
     });
 }
 
+// --- Theme Settings Persistence ---
+const THEME_SETTINGS_KEY = 'otkThemeSettings';
+
+function saveThemeSetting(key, value) {
+    let settings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
+    if (value === null || value === undefined) {
+        delete settings[key];
+    } else {
+        settings[key] = value;
+    }
+    localStorage.setItem(THEME_SETTINGS_KEY, JSON.stringify(settings));
+    consoleLog("Saved theme setting:", key, value);
+}
+
+function applyThemeSettings() {
+    let settings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
+    consoleLog("Applying theme settings:", settings);
+
+    if (settings.guiBgColor) {
+        document.documentElement.style.setProperty('--otk-gui-bg-color', settings.guiBgColor);
+        // Also update the input fields in the options window if it's already set up
+        const guiBgHexInput = document.getElementById('otk-color-gui-bg-hex');
+        const guiBgPicker = document.getElementById('otk-color-gui-bg-picker');
+        if (guiBgHexInput) guiBgHexInput.value = settings.guiBgColor;
+        if (guiBgPicker) guiBgPicker.value = settings.guiBgColor;
+    }
+
+    if (settings.titleTextColor) {
+        document.documentElement.style.setProperty('--otk-title-text-color', settings.titleTextColor);
+        const titleTextColorHexInput = document.getElementById('otk-color-title-text-hex');
+        const titleTextColorPicker = document.getElementById('otk-color-title-text-picker');
+        if (titleTextColorHexInput) titleTextColorHexInput.value = settings.titleTextColor;
+        if (titleTextColorPicker) titleTextColorPicker.value = settings.titleTextColor;
+    }
+
+    // Updated for Options Panel Text (formerly guiTextColor)
+    if (settings.optionsTextColor) {
+        document.documentElement.style.setProperty('--otk-options-text-color', settings.optionsTextColor);
+        const optionsTextColorHexInput = document.getElementById('otk-color-options-text-hex');
+        const optionsTextColorPicker = document.getElementById('otk-color-options-text-picker');
+        if (optionsTextColorHexInput) optionsTextColorHexInput.value = settings.optionsTextColor;
+        if (optionsTextColorPicker) optionsTextColorPicker.value = settings.optionsTextColor;
+    }
+
+    // Added for Actual Stats Text
+    if (settings.actualStatsTextColor) {
+        document.documentElement.style.setProperty('--otk-stats-text-color', settings.actualStatsTextColor);
+        const actualStatsTextColorHexInput = document.getElementById('otk-color-actual-stats-text-hex');
+        const actualStatsTextColorPicker = document.getElementById('otk-color-actual-stats-text-picker');
+        if (actualStatsTextColorHexInput) actualStatsTextColorHexInput.value = settings.actualStatsTextColor;
+        if (actualStatsTextColorPicker) actualStatsTextColorPicker.value = settings.actualStatsTextColor;
+    }
+
+    if (settings.viewerBgColor) {
+        document.documentElement.style.setProperty('--otk-viewer-bg-color', settings.viewerBgColor);
+        const viewerBgHexInput = document.getElementById('otk-color-viewer-bg-hex');
+        const viewerBgPicker = document.getElementById('otk-color-viewer-bg-picker');
+        if (viewerBgHexInput) viewerBgHexInput.value = settings.viewerBgColor;
+        if (viewerBgPicker) viewerBgPicker.value = settings.viewerBgColor;
+    }
+
+    if (settings.guiThreadListTitleColor) {
+        document.documentElement.style.setProperty('--otk-gui-threadlist-title-color', settings.guiThreadListTitleColor);
+        const inputHex = document.getElementById('otk-color-threadlist-title-hex');
+        const inputPicker = document.getElementById('otk-color-threadlist-title-picker');
+        if (inputHex) inputHex.value = settings.guiThreadListTitleColor;
+        if (inputPicker) inputPicker.value = settings.guiThreadListTitleColor;
+    }
+
+    if (settings.guiThreadListTimeColor) {
+        document.documentElement.style.setProperty('--otk-gui-threadlist-time-color', settings.guiThreadListTimeColor);
+        const inputHex = document.getElementById('otk-color-threadlist-time-hex');
+        const inputPicker = document.getElementById('otk-color-threadlist-time-picker');
+        if (inputHex) inputHex.value = settings.guiThreadListTimeColor;
+        if (inputPicker) inputPicker.value = settings.guiThreadListTimeColor;
+    }
+
+    // Viewer Header Border Color
+    if (settings.viewerHeaderBorderColor) {
+        document.documentElement.style.setProperty('--otk-viewer-header-border-color', settings.viewerHeaderBorderColor);
+        const hexInput = document.getElementById('otk-color-viewer-header-border-hex');
+        const picker = document.getElementById('otk-color-viewer-header-border-picker');
+        if (hexInput) hexInput.value = settings.viewerHeaderBorderColor;
+        if (picker) picker.value = settings.viewerHeaderBorderColor;
+    }
+
+    // Viewer Quote L1 Border Color
+    if (settings.viewerQuote1HeaderBorderColor) {
+        document.documentElement.style.setProperty('--otk-viewer-quote1-header-border-color', settings.viewerQuote1HeaderBorderColor);
+        const hexInput = document.getElementById('otk-color-viewer-quote1-border-hex');
+        const picker = document.getElementById('otk-color-viewer-quote1-border-picker');
+        if (hexInput) hexInput.value = settings.viewerQuote1HeaderBorderColor;
+        if (picker) picker.value = settings.viewerQuote1HeaderBorderColor;
+    }
+
+    // Message Background Colors
+    ['Depth 0', 'Depth 1', 'Depth 2+'].forEach((label, index) => {
+        const key = `msgDepth${index === 2 ? '2plus' : index}BgColor`;
+        const cssVar = `--otk-msg-depth${index === 2 ? '2plus' : index}-bg-color`;
+        const idSuffix = `msg-depth${index === 2 ? '2plus' : index}-bg`;
+        if (settings[key]) {
+            document.documentElement.style.setProperty(cssVar, settings[key]);
+            const hexInput = document.getElementById(`otk-color-${idSuffix}-hex`);
+            const picker = document.getElementById(`otk-color-${idSuffix}-picker`);
+            if (hexInput) hexInput.value = settings[key];
+            if (picker) picker.value = settings[key];
+        }
+    });
+
+    // Message Body Text Colors
+    ['Depth 0', 'Depth 1', 'Depth 2+'].forEach((label, index) => {
+        const key = `msgDepth${index === 2 ? '2plus' : index}TextColor`;
+        const cssVar = `--otk-msg-depth${index === 2 ? '2plus' : index}-text-color`;
+        const idSuffix = `msg-depth${index === 2 ? '2plus' : index}-text`;
+        if (settings[key]) {
+            document.documentElement.style.setProperty(cssVar, settings[key]);
+            const hexInput = document.getElementById(`otk-color-${idSuffix}-hex`);
+            const picker = document.getElementById(`otk-color-${idSuffix}-picker`);
+            if (hexInput) hexInput.value = settings[key];
+            if (picker) picker.value = settings[key];
+        }
+    });
+
+    // Message Header Text Colors
+    ['Depth 0', 'Depth 1', 'Depth 2+'].forEach((label, index) => {
+        const key = `msgDepth${index === 2 ? '2plus' : index}HeaderTextColor`;
+        const cssVar = `--otk-msg-depth${index === 2 ? '2plus' : index}-header-text-color`;
+        const idSuffix = `msg-depth${index === 2 ? '2plus' : index}-header-text`;
+        if (settings[key]) {
+            document.documentElement.style.setProperty(cssVar, settings[key]);
+            const hexInput = document.getElementById(`otk-color-${idSuffix}-hex`);
+            const picker = document.getElementById(`otk-color-${idSuffix}-picker`);
+            if (hexInput) hexInput.value = settings[key];
+            if (picker) picker.value = settings[key];
+        }
+    });
+
+    // Viewer Message Font Size
+    if (settings.viewerMessageFontSize) {
+        document.documentElement.style.setProperty('--otk-viewer-message-font-size', settings.viewerMessageFontSize);
+        const input = document.getElementById('otk-fontsize-message-text');
+        if (input) input.value = settings.viewerMessageFontSize.replace('px','');
+    }
+
+    if (settings.guiBottomBorderColor) {
+        document.documentElement.style.setProperty('--otk-gui-bottom-border-color', settings.guiBottomBorderColor);
+        const hexInput = document.getElementById('otk-color-gui-bottom-border-hex');
+        const picker = document.getElementById('otk-color-gui-bottom-border-picker');
+        if (hexInput) hexInput.value = settings.guiBottomBorderColor;
+        if (picker) picker.value = settings.guiBottomBorderColor;
+    }
+}
+
+
+function setupOptionsWindow() {
+    consoleLog("Setting up Options Window...");
+
+    // Check if window already exists
+    if (document.getElementById('otk-options-window')) {
+        consoleLog("Options window already exists.");
+        return;
+    }
+
+    const optionsWindow = document.createElement('div');
+    optionsWindow.id = 'otk-options-window';
+    optionsWindow.style.cssText = `
+        position: fixed;
+        top: 100px;
+        left: 100px;
+        width: 400px; /* Initial width, can be adjusted */
+        min-height: 200px; /* Initial min-height */
+        background-color: #2c2c2c; /* Slightly lighter than GUI for distinction */
+        border: 1px solid #444;
+        border-radius: 5px;
+        z-index: 10000; /* Below loading screen, above viewer/GUI */
+        display: none; /* Hidden by default */
+        flex-direction: column;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+        color: var(--otk-options-text-color); /* Use specific variable for options window text */
+    `;
+
+    const titleBar = document.createElement('div');
+    titleBar.id = 'otk-options-title-bar';
+    titleBar.style.cssText = `
+        padding: 8px 12px;
+        background-color: #383838;
+        color: #f0f0f0;
+        font-weight: bold;
+        cursor: move; /* For dragging */
+        border-bottom: 1px solid #444;
+        border-top-left-radius: 5px;
+        border-top-right-radius: 5px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    `;
+    titleBar.textContent = 'Theme Options';
+
+    const closeButton = document.createElement('span');
+    closeButton.id = 'otk-options-close-btn';
+    closeButton.innerHTML = '&#x2715;'; // 'X' character
+    closeButton.style.cssText = `
+        cursor: pointer;
+        font-size: 16px;
+        padding: 0 5px;
+    `;
+    closeButton.title = "Close Settings";
+
+    titleBar.appendChild(closeButton);
+    optionsWindow.appendChild(titleBar);
+
+    const contentArea = document.createElement('div');
+    contentArea.id = 'otk-options-content';
+    contentArea.style.cssText = `
+        padding: 15px;
+        flex-grow: 1; /* Allows content to fill space */
+        overflow-y: auto; /* If content gets too long */
+        /* display: flex; Will be handled by section container */
+        /* flex-direction: column; */
+        /* gap: 10px; */
+    `;
+    optionsWindow.appendChild(contentArea);
+
+    // --- Main Sections Container (for tabs or collapsible sections later) ---
+    const sectionsContainer = document.createElement('div');
+    contentArea.appendChild(sectionsContainer);
+
+    // --- Theme/Appearance Section ---
+    const themeSection = document.createElement('div');
+    themeSection.id = 'otk-options-theme-section';
+    themeSection.style.cssText = `
+        display: flex;
+        flex-direction: column;
+        gap: 10px; /* Space between color option groups */
+    `;
+    // Add a heading for the section (optional)
+    const themeSectionHeading = document.createElement('h4');
+    themeSectionHeading.textContent = 'Appearance Settings';
+    themeSectionHeading.style.cssText = "margin-top: 0; margin-bottom: 10px; border-bottom: 1px solid #555; padding-bottom: 5px;";
+    themeSection.appendChild(themeSectionHeading);
+
+    sectionsContainer.appendChild(themeSection); // Add theme section to main content
+
+    document.body.appendChild(optionsWindow);
+
+    // --- GUI Background Color Option --- (Now appends to themeSection)
+    const guiBgGroup = document.createElement('div');
+    guiBgGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+    const guiBgLabel = document.createElement('label');
+    guiBgLabel.textContent = "GUI Background:";
+    guiBgLabel.htmlFor = 'otk-color-gui-bg-picker'; // Associate with picker
+    guiBgLabel.style.minWidth = '130px';
+    guiBgLabel.style.textAlign = 'right';
+    guiBgLabel.style.marginRight = '5px';
+
+    const guiBgHexInput = document.createElement('input');
+    guiBgHexInput.type = 'text';
+    guiBgHexInput.id = 'otk-color-gui-bg-hex';
+    guiBgHexInput.style.width = '70px';
+    guiBgHexInput.style.height = '25px';
+    guiBgHexInput.style.boxSizing = 'border-box'; /* Include padding & border in height */
+
+    const guiBgPicker = document.createElement('input');
+    guiBgPicker.type = 'color';
+    guiBgPicker.id = 'otk-color-gui-bg-picker';
+    guiBgPicker.style.width = '45px'; /* Standardize width */
+    guiBgPicker.style.height = '25px'; /* Standardize height */
+    guiBgPicker.style.padding = '0px 2px'; /* Minimal padding, some browsers add their own */
+
+    const guiBgDefaultBtn = document.createElement('button');
+    guiBgDefaultBtn.textContent = 'Default';
+    guiBgDefaultBtn.style.padding = '2px 5px';
+    guiBgDefaultBtn.style.minWidth = '60px';
+    guiBgDefaultBtn.style.height = '25px';
+
+    guiBgGroup.appendChild(guiBgLabel);
+    guiBgGroup.appendChild(guiBgHexInput);
+    guiBgGroup.appendChild(guiBgPicker);
+    guiBgGroup.appendChild(guiBgDefaultBtn);
+    themeSection.appendChild(guiBgGroup); // Changed from contentArea
+
+    // Logic for GUI Background Color
+    const initialGuiBgColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-gui-bg-color').trim();
+
+    const updateGuiBgColor = (color) => {
+        color = color.trim();
+        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
+            // Basic validation, not perfect for all hex forms but good enough for now
+            // Potentially revert to a known good color or do nothing
+            consoleWarn("Invalid hex color for GUI BG:", color);
+            return; // Or set to a default/previous valid color
+        }
+        document.documentElement.style.setProperty('--otk-gui-bg-color', color);
+        guiBgHexInput.value = color;
+        guiBgPicker.value = color; // HTML5 color picker needs full 6-digit hex
+        saveThemeSetting('guiBgColor', color);
+    };
+
+    guiBgHexInput.addEventListener('input', (e) => updateGuiBgColor(e.target.value));
+    guiBgPicker.addEventListener('input', (e) => updateGuiBgColor(e.target.value));
+    guiBgDefaultBtn.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--otk-gui-bg-color');
+        guiBgHexInput.value = initialGuiBgColor; // Reset inputs to original default
+        guiBgPicker.value = initialGuiBgColor;
+        saveThemeSetting('guiBgColor', null); // null or undefined to signify default
+    });
+
+    // Placeholder for "Reset All Colors" button (to be added later in this step or next)
+    // const resetAllButton = document.createElement('button');
+    // resetAllButton.textContent = "Reset All Colors to Default";
+    // resetAllButton.style.marginTop = "15px";
+    // contentArea.appendChild(resetAllButton);
+
+    // --- GUI Title Text Color Option ---
+    const titleTextColorGroup = document.createElement('div');
+    titleTextColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+    const titleTextColorLabel = document.createElement('label');
+    titleTextColorLabel.textContent = "Title Text:";
+    titleTextColorLabel.htmlFor = 'otk-color-title-text-picker';
+    titleTextColorLabel.style.minWidth = '130px';
+    titleTextColorLabel.style.textAlign = 'right';
+    titleTextColorLabel.style.marginRight = '5px';
+
+    const titleTextColorHexInput = document.createElement('input');
+    titleTextColorHexInput.type = 'text';
+    titleTextColorHexInput.id = 'otk-color-title-text-hex';
+    titleTextColorHexInput.style.width = '70px';
+    titleTextColorHexInput.style.height = '25px';
+    titleTextColorHexInput.style.boxSizing = 'border-box';
+
+    const titleTextColorPicker = document.createElement('input');
+    titleTextColorPicker.type = 'color';
+    titleTextColorPicker.id = 'otk-color-title-text-picker';
+    titleTextColorPicker.style.width = '45px';
+    titleTextColorPicker.style.height = '25px';
+    titleTextColorPicker.style.padding = '0px 2px';
+
+    const titleTextColorDefaultBtn = document.createElement('button');
+    titleTextColorDefaultBtn.textContent = 'Default';
+    titleTextColorDefaultBtn.style.padding = '2px 5px';
+    titleTextColorDefaultBtn.style.minWidth = '60px';
+    titleTextColorDefaultBtn.style.height = '25px';
+
+    titleTextColorGroup.appendChild(titleTextColorLabel);
+    titleTextColorGroup.appendChild(titleTextColorHexInput);
+    titleTextColorGroup.appendChild(titleTextColorPicker);
+    titleTextColorGroup.appendChild(titleTextColorDefaultBtn);
+    themeSection.appendChild(titleTextColorGroup); // Changed from contentArea
+
+    // Logic for Title Text Color
+    const initialTitleTextColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-title-text-color').trim();
+
+    const updateTitleTextColor = (color) => {
+        color = color.trim();
+        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
+            consoleWarn("Invalid hex color for Title Text:", color);
+            return;
+        }
+        document.documentElement.style.setProperty('--otk-title-text-color', color);
+        titleTextColorHexInput.value = color;
+        titleTextColorPicker.value = color;
+        saveThemeSetting('titleTextColor', color);
+    };
+
+    titleTextColorHexInput.addEventListener('input', (e) => updateTitleTextColor(e.target.value));
+    titleTextColorPicker.addEventListener('input', (e) => updateTitleTextColor(e.target.value));
+    titleTextColorDefaultBtn.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--otk-title-text-color');
+        titleTextColorHexInput.value = initialTitleTextColor;
+        titleTextColorPicker.value = initialTitleTextColor;
+        saveThemeSetting('titleTextColor', null);
+    });
+
+    // --- Options Panel Text Color Option --- (Formerly GUI Stats Text)
+    const optionsTextColorGroup = document.createElement('div');
+    optionsTextColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+    const optionsTextColorLabel = document.createElement('label');
+    optionsTextColorLabel.textContent = "Options Panel Text:"; // Relabeled
+    optionsTextColorLabel.htmlFor = 'otk-color-options-text-picker';
+    optionsTextColorLabel.style.minWidth = '130px';
+    optionsTextColorLabel.style.textAlign = 'right';
+    optionsTextColorLabel.style.marginRight = '5px';
+
+    const optionsTextColorHexInput = document.createElement('input');
+    optionsTextColorHexInput.type = 'text';
+    optionsTextColorHexInput.id = 'otk-color-options-text-hex'; // New ID
+    optionsTextColorHexInput.style.width = '70px';
+    optionsTextColorHexInput.style.height = '25px';
+    optionsTextColorHexInput.style.boxSizing = 'border-box';
+
+    const optionsTextColorPicker = document.createElement('input');
+    optionsTextColorPicker.type = 'color';
+    optionsTextColorPicker.id = 'otk-color-options-text-picker'; // New ID
+    optionsTextColorPicker.style.width = '45px';
+    optionsTextColorPicker.style.height = '25px';
+    optionsTextColorPicker.style.padding = '0px 2px';
+
+    const optionsTextColorDefaultBtn = document.createElement('button');
+    optionsTextColorDefaultBtn.textContent = 'Default';
+    optionsTextColorDefaultBtn.style.padding = '2px 5px';
+    optionsTextColorDefaultBtn.style.minWidth = '60px';
+    optionsTextColorDefaultBtn.style.height = '25px';
+
+    optionsTextColorGroup.appendChild(optionsTextColorLabel);
+    optionsTextColorGroup.appendChild(optionsTextColorHexInput);
+    optionsTextColorGroup.appendChild(optionsTextColorPicker);
+    optionsTextColorGroup.appendChild(optionsTextColorDefaultBtn);
+    themeSection.appendChild(optionsTextColorGroup); // Changed from contentArea
+
+    // Logic for Options Panel Text Color (uses --otk-options-text-color)
+    const initialOptionsTextColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-options-text-color').trim();
+
+    const updateOptionsTextColor = (color) => {
+        color = color.trim();
+        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
+            consoleWarn("Invalid hex color for Options Panel Text:", color);
+            return;
+        }
+        document.documentElement.style.setProperty('--otk-options-text-color', color); // Updated variable
+        optionsTextColorHexInput.value = color;
+        optionsTextColorPicker.value = color;
+        saveThemeSetting('optionsTextColor', color); // Updated Key for localStorage
+    };
+
+    optionsTextColorHexInput.addEventListener('input', (e) => updateOptionsTextColor(e.target.value));
+    optionsTextColorPicker.addEventListener('input', (e) => updateOptionsTextColor(e.target.value));
+    optionsTextColorDefaultBtn.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--otk-options-text-color'); // Updated variable
+        optionsTextColorHexInput.value = initialOptionsTextColor;
+        optionsTextColorPicker.value = initialOptionsTextColor;
+        saveThemeSetting('optionsTextColor', null); // Updated key
+    });
+
+    // --- Actual Stats Text Color Option ---
+    const actualStatsTextColorGroup = document.createElement('div');
+    actualStatsTextColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+    const actualStatsTextColorLabel = document.createElement('label');
+    actualStatsTextColorLabel.textContent = "Stats Text (Actual):";
+    actualStatsTextColorLabel.htmlFor = 'otk-color-actual-stats-text-picker';
+    actualStatsTextColorLabel.style.minWidth = '130px';
+    actualStatsTextColorLabel.style.textAlign = 'right';
+    actualStatsTextColorLabel.style.marginRight = '5px';
+
+    const actualStatsTextColorHexInput = document.createElement('input');
+    actualStatsTextColorHexInput.type = 'text';
+    actualStatsTextColorHexInput.id = 'otk-color-actual-stats-text-hex';
+    actualStatsTextColorHexInput.style.width = '70px';
+    actualStatsTextColorHexInput.style.height = '25px';
+    actualStatsTextColorHexInput.style.boxSizing = 'border-box';
+
+    const actualStatsTextColorPicker = document.createElement('input');
+    actualStatsTextColorPicker.type = 'color';
+    actualStatsTextColorPicker.id = 'otk-color-actual-stats-text-picker';
+    actualStatsTextColorPicker.style.width = '45px';
+    actualStatsTextColorPicker.style.height = '25px';
+    actualStatsTextColorPicker.style.padding = '0px 2px';
+
+    const actualStatsTextColorDefaultBtn = document.createElement('button');
+    actualStatsTextColorDefaultBtn.textContent = 'Default';
+    actualStatsTextColorDefaultBtn.style.padding = '2px 5px';
+    actualStatsTextColorDefaultBtn.style.minWidth = '60px';
+    actualStatsTextColorDefaultBtn.style.height = '25px';
+
+    actualStatsTextColorGroup.appendChild(actualStatsTextColorLabel);
+    actualStatsTextColorGroup.appendChild(actualStatsTextColorHexInput);
+    actualStatsTextColorGroup.appendChild(actualStatsTextColorPicker);
+    actualStatsTextColorGroup.appendChild(actualStatsTextColorDefaultBtn);
+    themeSection.appendChild(actualStatsTextColorGroup); // Changed from contentArea
+
+    // Logic for Actual Stats Text Color (uses --otk-stats-text-color)
+    const initialActualStatsTextColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-stats-text-color').trim();
+
+    const updateActualStatsTextColor = (color) => {
+        color = color.trim();
+        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
+            consoleWarn("Invalid hex color for Actual Stats Text:", color);
+            return;
+        }
+        document.documentElement.style.setProperty('--otk-stats-text-color', color);
+        actualStatsTextColorHexInput.value = color;
+        actualStatsTextColorPicker.value = color;
+        saveThemeSetting('actualStatsTextColor', color);
+    };
+
+    actualStatsTextColorHexInput.addEventListener('input', (e) => updateActualStatsTextColor(e.target.value));
+    actualStatsTextColorPicker.addEventListener('input', (e) => updateActualStatsTextColor(e.target.value));
+    actualStatsTextColorDefaultBtn.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--otk-stats-text-color');
+        actualStatsTextColorHexInput.value = initialActualStatsTextColor;
+        actualStatsTextColorPicker.value = initialActualStatsTextColor;
+        saveThemeSetting('actualStatsTextColor', null);
+    });
+
+    // --- Viewer Background Color Option ---
+    const viewerBgGroup = document.createElement('div');
+    viewerBgGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+    const viewerBgLabel = document.createElement('label');
+    viewerBgLabel.textContent = "Viewer Background:";
+    viewerBgLabel.htmlFor = 'otk-color-viewer-bg-picker';
+    viewerBgLabel.style.minWidth = '130px';
+    viewerBgLabel.style.textAlign = 'right';
+    viewerBgLabel.style.marginRight = '5px';
+
+    const viewerBgHexInput = document.createElement('input');
+    viewerBgHexInput.type = 'text';
+    viewerBgHexInput.id = 'otk-color-viewer-bg-hex';
+    viewerBgHexInput.style.width = '70px';
+    viewerBgHexInput.style.height = '25px';
+    viewerBgHexInput.style.boxSizing = 'border-box';
+
+    const viewerBgPicker = document.createElement('input');
+    viewerBgPicker.type = 'color';
+    viewerBgPicker.id = 'otk-color-viewer-bg-picker';
+    viewerBgPicker.style.width = '45px';
+    viewerBgPicker.style.height = '25px';
+    viewerBgPicker.style.padding = '0px 2px';
+
+    const viewerBgDefaultBtn = document.createElement('button');
+    viewerBgDefaultBtn.textContent = 'Default';
+    viewerBgDefaultBtn.style.padding = '2px 5px';
+    viewerBgDefaultBtn.style.minWidth = '60px';
+    viewerBgDefaultBtn.style.height = '25px';
+
+    viewerBgGroup.appendChild(viewerBgLabel);
+    viewerBgGroup.appendChild(viewerBgHexInput);
+    viewerBgGroup.appendChild(viewerBgPicker);
+    viewerBgGroup.appendChild(viewerBgDefaultBtn);
+    themeSection.appendChild(viewerBgGroup); // Changed from contentArea
+
+    // Logic for Viewer Background Color
+    const initialViewerBgColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-viewer-bg-color').trim();
+
+    const updateViewerBgColor = (color) => {
+        color = color.trim();
+        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
+            consoleWarn("Invalid hex color for Viewer BG:", color);
+            return;
+        }
+        document.documentElement.style.setProperty('--otk-viewer-bg-color', color);
+        viewerBgHexInput.value = color;
+        viewerBgPicker.value = color;
+        saveThemeSetting('viewerBgColor', color);
+    };
+
+    viewerBgHexInput.addEventListener('input', (e) => updateViewerBgColor(e.target.value));
+    viewerBgPicker.addEventListener('input', (e) => updateViewerBgColor(e.target.value));
+    viewerBgDefaultBtn.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--otk-viewer-bg-color');
+        viewerBgHexInput.value = initialViewerBgColor;
+        viewerBgPicker.value = initialViewerBgColor;
+        saveThemeSetting('viewerBgColor', null);
+    });
+
+    // --- Thread List Titles Color Option ---
+    const threadListTitleColorGroup = document.createElement('div');
+    threadListTitleColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+    const threadListTitleColorLabel = document.createElement('label');
+    threadListTitleColorLabel.textContent = "Thread List Titles:";
+    threadListTitleColorLabel.htmlFor = 'otk-color-threadlist-title-picker';
+    threadListTitleColorLabel.style.minWidth = '130px';
+    threadListTitleColorLabel.style.textAlign = 'right';
+    threadListTitleColorLabel.style.marginRight = '5px';
+
+    const threadListTitleColorHexInput = document.createElement('input');
+    threadListTitleColorHexInput.type = 'text';
+    threadListTitleColorHexInput.id = 'otk-color-threadlist-title-hex';
+    threadListTitleColorHexInput.style.width = '70px';
+    threadListTitleColorHexInput.style.height = '25px';
+    threadListTitleColorHexInput.style.boxSizing = 'border-box';
+
+    const threadListTitleColorPicker = document.createElement('input');
+    threadListTitleColorPicker.type = 'color';
+    threadListTitleColorPicker.id = 'otk-color-threadlist-title-picker';
+    threadListTitleColorPicker.style.width = '45px';
+    threadListTitleColorPicker.style.height = '25px';
+    threadListTitleColorPicker.style.padding = '0px 2px';
+
+    const threadListTitleColorDefaultBtn = document.createElement('button');
+    threadListTitleColorDefaultBtn.textContent = 'Default';
+    threadListTitleColorDefaultBtn.style.padding = '2px 5px';
+    threadListTitleColorDefaultBtn.style.minWidth = '60px';
+    threadListTitleColorDefaultBtn.style.height = '25px';
+
+    threadListTitleColorGroup.appendChild(threadListTitleColorLabel);
+    threadListTitleColorGroup.appendChild(threadListTitleColorHexInput);
+    threadListTitleColorGroup.appendChild(threadListTitleColorPicker);
+    threadListTitleColorGroup.appendChild(threadListTitleColorDefaultBtn);
+    contentArea.appendChild(threadListTitleColorGroup);
+
+    // Logic for Thread List Titles Color
+    const initialThreadListTitleColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-gui-threadlist-title-color').trim();
+
+    const updateThreadListTitleColor = (color) => {
+        color = color.trim();
+        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
+            consoleWarn("Invalid hex color for Thread List Titles:", color);
+            return;
+        }
+        document.documentElement.style.setProperty('--otk-gui-threadlist-title-color', color);
+        threadListTitleColorHexInput.value = color;
+        threadListTitleColorPicker.value = color;
+        saveThemeSetting('guiThreadListTitleColor', color);
+    };
+
+    threadListTitleColorHexInput.addEventListener('input', (e) => updateThreadListTitleColor(e.target.value));
+    threadListTitleColorPicker.addEventListener('input', (e) => updateThreadListTitleColor(e.target.value));
+    threadListTitleColorDefaultBtn.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--otk-gui-threadlist-title-color');
+        threadListTitleColorHexInput.value = initialThreadListTitleColor;
+        threadListTitleColorPicker.value = initialThreadListTitleColor;
+        saveThemeSetting('guiThreadListTitleColor', null);
+    });
+
+    // --- Thread List Timestamps Color Option ---
+    const threadListTimeColorGroup = document.createElement('div');
+    threadListTimeColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+    const threadListTimeColorLabel = document.createElement('label');
+    threadListTimeColorLabel.textContent = "Thread List Times:";
+    threadListTimeColorLabel.htmlFor = 'otk-color-threadlist-time-picker';
+    threadListTimeColorLabel.style.minWidth = '130px';
+    threadListTimeColorLabel.style.textAlign = 'right';
+    threadListTimeColorLabel.style.marginRight = '5px';
+
+    const threadListTimeColorHexInput = document.createElement('input');
+    threadListTimeColorHexInput.type = 'text';
+    threadListTimeColorHexInput.id = 'otk-color-threadlist-time-hex';
+    threadListTimeColorHexInput.style.width = '70px';
+    threadListTimeColorHexInput.style.height = '25px';
+    threadListTimeColorHexInput.style.boxSizing = 'border-box';
+
+    const threadListTimeColorPicker = document.createElement('input');
+    threadListTimeColorPicker.type = 'color';
+    threadListTimeColorPicker.id = 'otk-color-threadlist-time-picker';
+    threadListTimeColorPicker.style.width = '45px';
+    threadListTimeColorPicker.style.height = '25px';
+    threadListTimeColorPicker.style.padding = '0px 2px';
+
+    const threadListTimeColorDefaultBtn = document.createElement('button');
+    threadListTimeColorDefaultBtn.textContent = 'Default';
+    threadListTimeColorDefaultBtn.style.padding = '2px 5px';
+    threadListTimeColorDefaultBtn.style.minWidth = '60px';
+    threadListTimeColorDefaultBtn.style.height = '25px';
+
+    threadListTimeColorGroup.appendChild(threadListTimeColorLabel);
+    threadListTimeColorGroup.appendChild(threadListTimeColorHexInput);
+    threadListTimeColorGroup.appendChild(threadListTimeColorPicker);
+    threadListTimeColorGroup.appendChild(threadListTimeColorDefaultBtn);
+    contentArea.appendChild(threadListTimeColorGroup);
+
+    // Logic for Thread List Timestamps Color
+    const initialThreadListTimeColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-gui-threadlist-time-color').trim();
+
+    const updateThreadListTimeColor = (color) => {
+        color = color.trim();
+        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
+            consoleWarn("Invalid hex color for Thread List Times:", color);
+            return;
+        }
+        document.documentElement.style.setProperty('--otk-gui-threadlist-time-color', color);
+        threadListTimeColorHexInput.value = color;
+        threadListTimeColorPicker.value = color;
+        saveThemeSetting('guiThreadListTimeColor', color);
+    };
+
+    threadListTimeColorHexInput.addEventListener('input', (e) => updateThreadListTimeColor(e.target.value));
+    threadListTimeColorPicker.addEventListener('input', (e) => updateThreadListTimeColor(e.target.value));
+    threadListTimeColorDefaultBtn.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--otk-gui-threadlist-time-color');
+        threadListTimeColorHexInput.value = initialThreadListTimeColor;
+        threadListTimeColorPicker.value = initialThreadListTimeColor;
+        saveThemeSetting('guiThreadListTimeColor', null);
+    });
+
+    // --- Viewer Header Border Color Option ---
+    const viewerHeaderBorderColorGroup = document.createElement('div');
+    viewerHeaderBorderColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+    const viewerHeaderBorderColorLabel = document.createElement('label');
+    viewerHeaderBorderColorLabel.textContent = "Viewer Header Border:";
+    viewerHeaderBorderColorLabel.htmlFor = 'otk-color-viewer-header-border-picker';
+    viewerHeaderBorderColorLabel.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
+    const viewerHeaderBorderColorHexInput = document.createElement('input');
+    viewerHeaderBorderColorHexInput.type = 'text';
+    viewerHeaderBorderColorHexInput.id = 'otk-color-viewer-header-border-hex';
+    viewerHeaderBorderColorHexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
+    const viewerHeaderBorderColorPicker = document.createElement('input');
+    viewerHeaderBorderColorPicker.type = 'color';
+    viewerHeaderBorderColorPicker.id = 'otk-color-viewer-header-border-picker';
+    viewerHeaderBorderColorPicker.style.cssText = "width: 45px; height: 25px; padding: 0px 2px;";
+    const viewerHeaderBorderColorDefaultBtn = document.createElement('button');
+    viewerHeaderBorderColorDefaultBtn.textContent = 'Default';
+    viewerHeaderBorderColorDefaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
+    viewerHeaderBorderColorGroup.append(viewerHeaderBorderColorLabel, viewerHeaderBorderColorHexInput, viewerHeaderBorderColorPicker, viewerHeaderBorderColorDefaultBtn);
+    contentArea.appendChild(viewerHeaderBorderColorGroup);
+    const initialViewerHeaderBorderColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-viewer-header-border-color').trim();
+    const updateViewerHeaderBorderColor = (color) => {
+        color = color.trim();
+        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) return;
+        document.documentElement.style.setProperty('--otk-viewer-header-border-color', color);
+        viewerHeaderBorderColorHexInput.value = color;
+        viewerHeaderBorderColorPicker.value = color;
+        saveThemeSetting('viewerHeaderBorderColor', color);
+    };
+    viewerHeaderBorderColorHexInput.addEventListener('input', (e) => updateViewerHeaderBorderColor(e.target.value));
+    viewerHeaderBorderColorPicker.addEventListener('input', (e) => updateViewerHeaderBorderColor(e.target.value));
+    viewerHeaderBorderColorDefaultBtn.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--otk-viewer-header-border-color');
+        viewerHeaderBorderColorHexInput.value = initialViewerHeaderBorderColor;
+        viewerHeaderBorderColorPicker.value = initialViewerHeaderBorderColor;
+        saveThemeSetting('viewerHeaderBorderColor', null);
+    });
+
+    // --- Viewer Quote L1 Border Color Option ---
+    const viewerQuote1BorderColorGroup = document.createElement('div');
+    viewerQuote1BorderColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+    const viewerQuote1BorderColorLabel = document.createElement('label');
+    viewerQuote1BorderColorLabel.textContent = "Quote L1 Header Border:";
+    viewerQuote1BorderColorLabel.htmlFor = 'otk-color-viewer-quote1-border-picker';
+    viewerQuote1BorderColorLabel.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
+    const viewerQuote1BorderColorHexInput = document.createElement('input');
+    viewerQuote1BorderColorHexInput.type = 'text';
+    viewerQuote1BorderColorHexInput.id = 'otk-color-viewer-quote1-border-hex';
+    viewerQuote1BorderColorHexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
+    const viewerQuote1BorderColorPicker = document.createElement('input');
+    viewerQuote1BorderColorPicker.type = 'color';
+    viewerQuote1BorderColorPicker.id = 'otk-color-viewer-quote1-border-picker';
+    viewerQuote1BorderColorPicker.style.cssText = "width: 45px; height: 25px; padding: 0px 2px;";
+    const viewerQuote1BorderColorDefaultBtn = document.createElement('button');
+    viewerQuote1BorderColorDefaultBtn.textContent = 'Default';
+    viewerQuote1BorderColorDefaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
+    viewerQuote1BorderColorGroup.append(viewerQuote1BorderColorLabel, viewerQuote1BorderColorHexInput, viewerQuote1BorderColorPicker, viewerQuote1BorderColorDefaultBtn);
+    contentArea.appendChild(viewerQuote1BorderColorGroup);
+    const initialViewerQuote1BorderColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-viewer-quote1-header-border-color').trim();
+    const updateViewerQuote1BorderColor = (color) => {
+        color = color.trim();
+        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) return;
+        document.documentElement.style.setProperty('--otk-viewer-quote1-header-border-color', color);
+        viewerQuote1BorderColorHexInput.value = color;
+        viewerQuote1BorderColorPicker.value = color;
+        saveThemeSetting('viewerQuote1HeaderBorderColor', color);
+    };
+    viewerQuote1BorderColorHexInput.addEventListener('input', (e) => updateViewerQuote1BorderColor(e.target.value));
+    viewerQuote1BorderColorPicker.addEventListener('input', (e) => updateViewerQuote1BorderColor(e.target.value));
+    viewerQuote1BorderColorDefaultBtn.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--otk-viewer-quote1-header-border-color');
+        viewerQuote1BorderColorHexInput.value = initialViewerQuote1BorderColor;
+        viewerQuote1BorderColorPicker.value = initialViewerQuote1BorderColor;
+        saveThemeSetting('viewerQuote1HeaderBorderColor', null);
+    });
+
+    // --- Message Background Colors ---
+    ['Depth 0', 'Depth 1', 'Depth 2+'].forEach((label, index) => {
+        const key = `msgDepth${index === 2 ? '2plus' : index}BgColor`;
+        const cssVar = `--otk-msg-depth${index === 2 ? '2plus' : index}-bg-color`;
+        const idSuffix = `msg-depth${index === 2 ? '2plus' : index}-bg`; // Used for IDs
+
+        const group = document.createElement('div');
+        group.style.cssText = "display: flex; align-items: center; gap: 8px;";
+        const lbl = document.createElement('label');
+        lbl.textContent = `Msg BG (${label}):`;
+        lbl.htmlFor = `otk-color-${idSuffix}-picker`;
+        lbl.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
+        const hexInput = document.createElement('input');
+        hexInput.type = 'text';
+        hexInput.id = `otk-color-${idSuffix}-hex`;
+        hexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
+        const picker = document.createElement('input');
+        picker.type = 'color';
+        picker.id = `otk-color-${idSuffix}-picker`;
+        picker.style.cssText = "width: 45px; height: 25px; padding: 0px 2px;";
+        const defaultBtn = document.createElement('button');
+        defaultBtn.textContent = 'Default';
+        defaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
+
+        group.append(lbl, hexInput, picker, defaultBtn);
+        themeSection.appendChild(group); // Changed from contentArea
+
+        const initialColor = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
+        const updateColor = (color) => {
+            color = color.trim();
+            if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) return;
+            document.documentElement.style.setProperty(cssVar, color);
+            hexInput.value = color;
+            picker.value = color;
+            saveThemeSetting(key, color);
+        };
+        hexInput.addEventListener('input', (e) => updateColor(e.target.value));
+        picker.addEventListener('input', (e) => updateColor(e.target.value));
+        defaultBtn.addEventListener('click', () => {
+            document.documentElement.style.removeProperty(cssVar);
+            hexInput.value = initialColor;
+            picker.value = initialColor;
+            saveThemeSetting(key, null);
+        });
+    });
+
+    // --- Message Body Text Colors ---
+    ['Depth 0', 'Depth 1', 'Depth 2+'].forEach((label, index) => {
+        const key = `msgDepth${index === 2 ? '2plus' : index}TextColor`;
+        const cssVar = `--otk-msg-depth${index === 2 ? '2plus' : index}-text-color`;
+        const idSuffix = `msg-depth${index === 2 ? '2plus' : index}-text`; // Used for IDs
+
+        const group = document.createElement('div');
+        group.style.cssText = "display: flex; align-items: center; gap: 8px;";
+        const lbl = document.createElement('label');
+        lbl.textContent = `Msg Text (${label}):`;
+        lbl.htmlFor = `otk-color-${idSuffix}-picker`;
+        lbl.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
+        const hexInput = document.createElement('input');
+        hexInput.type = 'text';
+        hexInput.id = `otk-color-${idSuffix}-hex`;
+        hexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
+        const picker = document.createElement('input');
+        picker.type = 'color';
+        picker.id = `otk-color-${idSuffix}-picker`;
+        picker.style.cssText = "width: 45px; height: 25px; padding: 0px 2px;";
+        const defaultBtn = document.createElement('button');
+        defaultBtn.textContent = 'Default';
+        defaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
+
+        group.append(lbl, hexInput, picker, defaultBtn);
+        themeSection.appendChild(group); // Changed from contentArea
+
+        const initialColor = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
+        const updateColor = (color) => {
+            color = color.trim();
+            if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) return;
+            document.documentElement.style.setProperty(cssVar, color);
+            hexInput.value = color;
+            picker.value = color;
+            saveThemeSetting(key, color);
+        };
+        hexInput.addEventListener('input', (e) => updateColor(e.target.value));
+        picker.addEventListener('input', (e) => updateColor(e.target.value));
+        defaultBtn.addEventListener('click', () => {
+            document.documentElement.style.removeProperty(cssVar);
+            hexInput.value = initialColor;
+            picker.value = initialColor;
+            saveThemeSetting(key, null);
+        });
+    });
+
+    // --- Message Header Text Colors ---
+    ['Depth 0', 'Depth 1', 'Depth 2+'].forEach((label, index) => {
+        const key = `msgDepth${index === 2 ? '2plus' : index}HeaderTextColor`;
+        const cssVar = `--otk-msg-depth${index === 2 ? '2plus' : index}-header-text-color`;
+        const idSuffix = `msg-depth${index === 2 ? '2plus' : index}-header-text`;
+
+        const group = document.createElement('div');
+        group.style.cssText = "display: flex; align-items: center; gap: 8px;";
+        const lbl = document.createElement('label');
+        lbl.textContent = `Msg Header (${label}):`;
+        lbl.htmlFor = `otk-color-${idSuffix}-picker`;
+        lbl.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
+        const hexInput = document.createElement('input');
+        hexInput.type = 'text';
+        hexInput.id = `otk-color-${idSuffix}-hex`;
+        hexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
+        const picker = document.createElement('input');
+        picker.type = 'color';
+        picker.id = `otk-color-${idSuffix}-picker`;
+        picker.style.cssText = "width: 45px; height: 25px; padding: 0px 2px;";
+        const defaultBtn = document.createElement('button');
+        defaultBtn.textContent = 'Default';
+        defaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
+
+        group.append(lbl, hexInput, picker, defaultBtn);
+        themeSection.appendChild(group); // Changed from contentArea
+
+        const initialColor = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
+        const updateColor = (color) => {
+            color = color.trim();
+            if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) return;
+            document.documentElement.style.setProperty(cssVar, color);
+            hexInput.value = color;
+            picker.value = color;
+            saveThemeSetting(key, color);
+        };
+        hexInput.addEventListener('input', (e) => updateColor(e.target.value));
+        picker.addEventListener('input', (e) => updateColor(e.target.value));
+        defaultBtn.addEventListener('click', () => {
+            document.documentElement.style.removeProperty(cssVar);
+            hexInput.value = initialColor;
+            picker.value = initialColor;
+            saveThemeSetting(key, null);
+        });
+    });
+
+    // --- Viewer Message Font Size Option ---
+    const msgFontSizeGroup = document.createElement('div');
+    msgFontSizeGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+    const msgFontSizeLabel = document.createElement('label');
+    msgFontSizeLabel.textContent = "Message Font Size (px):";
+    msgFontSizeLabel.htmlFor = 'otk-fontsize-message-text';
+    msgFontSizeLabel.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
+
+    const msgFontSizeInput = document.createElement('input');
+    msgFontSizeInput.type = 'number';
+    msgFontSizeInput.id = 'otk-fontsize-message-text';
+    msgFontSizeInput.min = '8';
+    msgFontSizeInput.max = '24';
+    msgFontSizeInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
+
+    const msgFontSizeDefaultBtn = document.createElement('button');
+    msgFontSizeDefaultBtn.textContent = 'Default';
+    msgFontSizeDefaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
+
+    msgFontSizeGroup.append(msgFontSizeLabel, msgFontSizeInput, msgFontSizeDefaultBtn);
+    themeSection.appendChild(msgFontSizeGroup); // Changed from contentArea
+
+    const initialMsgFontSize = getComputedStyle(document.documentElement).getPropertyValue('--otk-viewer-message-font-size').trim().replace('px', '');
+
+    const updateMsgFontSize = (size) => {
+        size = parseInt(size, 10);
+        if (isNaN(size) || size < parseInt(msgFontSizeInput.min, 10) || size > parseInt(msgFontSizeInput.max, 10)) {
+            consoleWarn("Invalid font size:", size);
+            // Optionally revert to initialMsgFontSize or clamp
+            msgFontSizeInput.value = initialMsgFontSize; // Revert to initial if invalid
+            return;
+        }
+        document.documentElement.style.setProperty('--otk-viewer-message-font-size', `${size}px`);
+        msgFontSizeInput.value = size; // Ensure input reflects validated size
+        saveThemeSetting('viewerMessageFontSize', `${size}px`);
+    };
+
+    msgFontSizeInput.addEventListener('change', (e) => updateMsgFontSize(e.target.value)); // 'change' is better for number input validation
+    msgFontSizeDefaultBtn.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--otk-viewer-message-font-size');
+        msgFontSizeInput.value = initialMsgFontSize;
+        saveThemeSetting('viewerMessageFontSize', null);
+    });
+
+    // --- GUI Bottom Border Color Option ---
+    const guiBottomBorderColorGroup = document.createElement('div');
+    guiBottomBorderColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+    const guiBottomBorderColorLabel = document.createElement('label');
+    guiBottomBorderColorLabel.textContent = "GUI Bottom Border:";
+    guiBottomBorderColorLabel.htmlFor = 'otk-color-gui-bottom-border-picker';
+    guiBottomBorderColorLabel.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
+    const guiBottomBorderColorHexInput = document.createElement('input');
+    guiBottomBorderColorHexInput.type = 'text';
+    guiBottomBorderColorHexInput.id = 'otk-color-gui-bottom-border-hex';
+    guiBottomBorderColorHexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
+    const guiBottomBorderColorPicker = document.createElement('input');
+    guiBottomBorderColorPicker.type = 'color';
+    guiBottomBorderColorPicker.id = 'otk-color-gui-bottom-border-picker';
+    guiBottomBorderColorPicker.style.cssText = "width: 45px; height: 25px; padding: 0px 2px;";
+    const guiBottomBorderColorDefaultBtn = document.createElement('button');
+    guiBottomBorderColorDefaultBtn.textContent = 'Default';
+    guiBottomBorderColorDefaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
+    guiBottomBorderColorGroup.append(guiBottomBorderColorLabel, guiBottomBorderColorHexInput, guiBottomBorderColorPicker, guiBottomBorderColorDefaultBtn);
+    themeSection.appendChild(guiBottomBorderColorGroup); // Appending to themeSection
+
+    const initialGuiBottomBorderColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-gui-bottom-border-color').trim();
+    const updateGuiBottomBorderColor = (color) => {
+        color = color.trim();
+        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) return;
+        document.documentElement.style.setProperty('--otk-gui-bottom-border-color', color);
+        guiBottomBorderColorHexInput.value = color;
+        guiBottomBorderColorPicker.value = color;
+        saveThemeSetting('guiBottomBorderColor', color);
+    };
+    guiBottomBorderColorHexInput.addEventListener('input', (e) => updateGuiBottomBorderColor(e.target.value));
+    guiBottomBorderColorPicker.addEventListener('input', (e) => updateGuiBottomBorderColor(e.target.value));
+    guiBottomBorderColorDefaultBtn.addEventListener('click', () => {
+        document.documentElement.style.removeProperty('--otk-gui-bottom-border-color');
+        guiBottomBorderColorHexInput.value = initialGuiBottomBorderColor;
+        guiBottomBorderColorPicker.value = initialGuiBottomBorderColor;
+        saveThemeSetting('guiBottomBorderColor', null);
+    });
+
+
+    const resetAllColorsButton = document.createElement('button');
+    resetAllColorsButton.textContent = "Reset All Colors to Default";
+    resetAllColorsButton.id = 'otk-reset-all-colors-btn';
+    resetAllColorsButton.style.marginTop = "20px"; // Add some space above it
+    resetAllColorsButton.style.padding = "5px 10px";
+    themeSection.appendChild(resetAllColorsButton); // Changed from contentArea
+
+    resetAllColorsButton.addEventListener('click', () => {
+        if (!confirm("Are you sure you want to reset all color settings to their defaults?")) {
+            return;
+        }
+        consoleLog("Resetting all implemented color settings to default...");
+
+        // GUI Background Color
+        document.documentElement.style.removeProperty('--otk-gui-bg-color');
+        const guiBgHexInput = document.getElementById('otk-color-gui-bg-hex');
+        const guiBgPicker = document.getElementById('otk-color-gui-bg-picker');
+        if (guiBgHexInput) guiBgHexInput.value = initialGuiBgColor; // initialGuiBgColor is in scope
+        if (guiBgPicker) guiBgPicker.value = initialGuiBgColor;
+        saveThemeSetting('guiBgColor', null);
+
+        // Title Text Color
+        document.documentElement.style.removeProperty('--otk-title-text-color');
+        const titleTextColorHexInput = document.getElementById('otk-color-title-text-hex');
+        const titleTextColorPicker = document.getElementById('otk-color-title-text-picker');
+        if (titleTextColorHexInput) titleTextColorHexInput.value = initialTitleTextColor; // initialTitleTextColor is in scope
+        if (titleTextColorPicker) titleTextColorPicker.value = initialTitleTextColor;
+        saveThemeSetting('titleTextColor', null);
+
+        // Options Panel Text Color (formerly GUI Text Color / Stats Text)
+        document.documentElement.style.removeProperty('--otk-options-text-color');
+        const optionsTextColorHexInput = document.getElementById('otk-color-options-text-hex');
+        const optionsTextColorPicker = document.getElementById('otk-color-options-text-picker');
+        if (optionsTextColorHexInput) optionsTextColorHexInput.value = initialOptionsTextColor; // initialOptionsTextColor is in scope
+        if (optionsTextColorPicker) optionsTextColorPicker.value = initialOptionsTextColor;
+        saveThemeSetting('optionsTextColor', null);
+
+        // Actual Stats Text Color
+        document.documentElement.style.removeProperty('--otk-stats-text-color');
+        const actualStatsTextColorHexInput = document.getElementById('otk-color-actual-stats-text-hex');
+        const actualStatsTextColorPicker = document.getElementById('otk-color-actual-stats-text-picker');
+        if (actualStatsTextColorHexInput) actualStatsTextColorHexInput.value = initialActualStatsTextColor; // initialActualStatsTextColor is in scope
+        if (actualStatsTextColorPicker) actualStatsTextColorPicker.value = initialActualStatsTextColor;
+        saveThemeSetting('actualStatsTextColor', null);
+
+        // Viewer Background Color
+        document.documentElement.style.removeProperty('--otk-viewer-bg-color');
+        const viewerBgHexInput = document.getElementById('otk-color-viewer-bg-hex');
+        const viewerBgPicker = document.getElementById('otk-color-viewer-bg-picker');
+        if (viewerBgHexInput) viewerBgHexInput.value = initialViewerBgColor; // initialViewerBgColor is in scope
+        if (viewerBgPicker) viewerBgPicker.value = initialViewerBgColor;
+        saveThemeSetting('viewerBgColor', null);
+
+        // GUI Thread List Titles
+        document.documentElement.style.removeProperty('--otk-gui-threadlist-title-color');
+        const threadListTitleColorHexInput = document.getElementById('otk-color-threadlist-title-hex');
+        const threadListTitleColorPicker = document.getElementById('otk-color-threadlist-title-picker');
+        if (threadListTitleColorHexInput) threadListTitleColorHexInput.value = initialThreadListTitleColor; // in scope
+        if (threadListTitleColorPicker) threadListTitleColorPicker.value = initialThreadListTitleColor;
+        saveThemeSetting('guiThreadListTitleColor', null);
+
+        // GUI Thread List Times
+        document.documentElement.style.removeProperty('--otk-gui-threadlist-time-color');
+        const threadListTimeColorHexInput = document.getElementById('otk-color-threadlist-time-hex');
+        const threadListTimeColorPicker = document.getElementById('otk-color-threadlist-time-picker');
+        if (threadListTimeColorHexInput) threadListTimeColorHexInput.value = initialThreadListTimeColor; // in scope
+        if (threadListTimeColorPicker) threadListTimeColorPicker.value = initialThreadListTimeColor;
+        saveThemeSetting('guiThreadListTimeColor', null);
+
+        // Viewer Header Border
+        document.documentElement.style.removeProperty('--otk-viewer-header-border-color');
+        const viewerHeaderBorderColorHexInput = document.getElementById('otk-color-viewer-header-border-hex');
+        const viewerHeaderBorderColorPicker = document.getElementById('otk-color-viewer-header-border-picker');
+        if (viewerHeaderBorderColorHexInput) viewerHeaderBorderColorHexInput.value = initialViewerHeaderBorderColor; // in scope
+        if (viewerHeaderBorderColorPicker) viewerHeaderBorderColorPicker.value = initialViewerHeaderBorderColor;
+        saveThemeSetting('viewerHeaderBorderColor', null);
+
+        // Viewer Quote L1 Border
+        document.documentElement.style.removeProperty('--otk-viewer-quote1-header-border-color');
+        const viewerQuote1BorderColorHexInput = document.getElementById('otk-color-viewer-quote1-border-hex');
+        const viewerQuote1BorderColorPicker = document.getElementById('otk-color-viewer-quote1-border-picker');
+        if (viewerQuote1BorderColorHexInput) viewerQuote1BorderColorHexInput.value = initialViewerQuote1BorderColor; // in scope
+        if (viewerQuote1BorderColorPicker) viewerQuote1BorderColorPicker.value = initialViewerQuote1BorderColor;
+        saveThemeSetting('viewerQuote1HeaderBorderColor', null);
+
+        // Message BG, Text, Header Text Colors by Depth
+        ['Depth 0', 'Depth 1', 'Depth 2+'].forEach((label, index) => {
+            const depthSuffix = index === 2 ? '2plus' : index;
+            // BG
+            const bgKey = `msgDepth${depthSuffix}BgColor`;
+            const bgCssVar = `--otk-msg-depth${depthSuffix}-bg-color`;
+            const bgIdSuffix = `msg-depth${depthSuffix}-bg`;
+            document.documentElement.style.removeProperty(bgCssVar);
+            const bgHexInput = document.getElementById(`otk-color-${bgIdSuffix}-hex`);
+            const bgPicker = document.getElementById(`otk-color-${bgIdSuffix}-picker`);
+            // Need to fetch initial default for these dynamically created inputs or re-use the one from their setup.
+            // For simplicity now, just clearing. Proper reset would re-fetch or store initial defaults globally.
+            // This requires initial<Type>Color variables to be accessible or re-fetched.
+            // For now, this will clear the override; the CSS default will apply. The input fields might not update to CSS default.
+            // This part needs the initial<ColorName> variables to be accessible.
+            // Let's assume they are in scope (they are defined within setupOptionsWindow for each group)
+            // This is a simplification: a more robust reset would get defaults from CSS again for inputs.
+            const initialBg = getComputedStyle(document.documentElement).getPropertyValue(bgCssVar).trim();
+            if (bgHexInput) bgHexInput.value = initialBg;
+            if (bgPicker) bgPicker.value = initialBg;
+            saveThemeSetting(bgKey, null);
+
+            // Text
+            const textKey = `msgDepth${depthSuffix}TextColor`;
+            const textCssVar = `--otk-msg-depth${depthSuffix}-text-color`;
+            const textIdSuffix = `msg-depth${depthSuffix}-text`;
+            document.documentElement.style.removeProperty(textCssVar);
+            const textHexInput = document.getElementById(`otk-color-${textIdSuffix}-hex`);
+            const textPicker = document.getElementById(`otk-color-${textIdSuffix}-picker`);
+            const initialText = getComputedStyle(document.documentElement).getPropertyValue(textCssVar).trim();
+            if (textHexInput) textHexInput.value = initialText;
+            if (textPicker) textPicker.value = initialText;
+            saveThemeSetting(textKey, null);
+
+            // Header Text
+            const headerTextKey = `msgDepth${depthSuffix}HeaderTextColor`;
+            const headerTextCssVar = `--otk-msg-depth${depthSuffix}-header-text-color`;
+            const headerTextIdSuffix = `msg-depth${depthSuffix}-header-text`;
+            document.documentElement.style.removeProperty(headerTextCssVar);
+            const headerTextHexInput = document.getElementById(`otk-color-${headerTextIdSuffix}-hex`);
+            const headerTextPicker = document.getElementById(`otk-color-${headerTextIdSuffix}-picker`);
+            const initialHeaderText = getComputedStyle(document.documentElement).getPropertyValue(headerTextCssVar).trim();
+            if (headerTextHexInput) headerTextHexInput.value = initialHeaderText;
+            if (headerTextPicker) headerTextPicker.value = initialHeaderText;
+            saveThemeSetting(headerTextKey, null);
+        });
+
+        // Viewer Message Font Size
+        document.documentElement.style.removeProperty('--otk-viewer-message-font-size');
+        const msgFontSizeInput = document.getElementById('otk-fontsize-message-text');
+        if (msgFontSizeInput) msgFontSizeInput.value = initialMsgFontSize; // in scope
+        saveThemeSetting('viewerMessageFontSize', null);
+
+        // GUI Bottom Border Color
+        document.documentElement.style.removeProperty('--otk-gui-bottom-border-color');
+        const guiBottomBorderColorHexInput = document.getElementById('otk-color-gui-bottom-border-hex');
+        const guiBottomBorderColorPicker = document.getElementById('otk-color-gui-bottom-border-picker');
+        if (guiBottomBorderColorHexInput) guiBottomBorderColorHexInput.value = initialGuiBottomBorderColor; // in scope
+        if (guiBottomBorderColorPicker) guiBottomBorderColorPicker.value = initialGuiBottomBorderColor;
+        saveThemeSetting('guiBottomBorderColor', null);
+
+        alert("All customized color and font size settings have been reset to their defaults.");
+    });
+
+
+    // Event Listeners for cog and close
+    const cogIcon = document.getElementById('otk-settings-cog');
+    if (cogIcon) {
+        cogIcon.addEventListener('click', () => {
+            optionsWindow.style.display = optionsWindow.style.display === 'none' ? 'flex' : 'none';
+            consoleLog("Toggled options window visibility to:", optionsWindow.style.display);
+        });
+    } else {
+        consoleError("Cog icon not found for options window toggle.");
+    }
+
+    closeButton.addEventListener('click', () => {
+        optionsWindow.style.display = 'none';
+        consoleLog("Options window closed.");
+    });
+
+    // Make window draggable
+    let isDragging = false;
+    let offsetX, offsetY;
+
+    titleBar.addEventListener('mousedown', (e) => {
+        // Prevent dragging if clicking on the close button itself
+        if (e.target === closeButton || closeButton.contains(e.target)) {
+            return;
+        }
+        isDragging = true;
+        offsetX = e.clientX - optionsWindow.offsetLeft;
+        offsetY = e.clientY - optionsWindow.offsetTop;
+        titleBar.style.userSelect = 'none'; // Prevent text selection during drag
+        document.body.style.userSelect = 'none'; // Prevent text selection on body during drag
+        consoleLog("Draggable window: mousedown");
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            // Ensure optionsWindow is not moved off-screen, with some buffer
+            let newLeft = e.clientX - offsetX;
+            let newTop = e.clientY - offsetY;
+
+            const buffer = 10; // pixels
+            const maxLeft = window.innerWidth - optionsWindow.offsetWidth - buffer;
+            const maxTop = window.innerHeight - optionsWindow.offsetHeight - buffer;
+
+            newLeft = Math.max(buffer, Math.min(newLeft, maxLeft));
+            newTop = Math.max(buffer, Math.min(newTop, maxTop));
+
+            optionsWindow.style.left = newLeft + 'px';
+            optionsWindow.style.top = newTop + 'px';
+        }
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (isDragging) {
+            isDragging = false;
+            titleBar.style.userSelect = ''; // Re-enable text selection
+            document.body.style.userSelect = '';
+            consoleLog("Draggable window: mouseup");
+            // Future: save position to localStorage here if desired
+            // localStorage.setItem('otkOptionsWindowPos', JSON.stringify({top: optionsWindow.style.top, left: optionsWindow.style.left}));
+        }
+    });
+
+    consoleLog("Options Window setup complete with drag functionality.");
+}
+
 // --- Initial Actions / Main Execution ---
 async function main() {
     consoleLog("Starting OTK Thread Tracker script (v2.7)...");
@@ -2887,6 +4168,31 @@ async function main() {
     // Inject CSS for anchored messages
     const styleElement = document.createElement('style');
     styleElement.textContent = `
+        :root {
+            --otk-gui-bg-color: #181818;
+            --otk-gui-text-color: #e6e6e6; /* General text in the main GUI bar */
+            --otk-options-text-color: #e6e6e6; /* For text within the options panel */
+            --otk-title-text-color: #e6e6e6; /* Default for main title */
+            --otk-stats-text-color: #e6e6e6; /* For the actual stats text numbers in GUI bar */
+            --otk-viewer-bg-color: #181818;
+            --otk-gui-threadlist-title-color: #e0e0e0;
+            --otk-gui-threadlist-time-color: #aaa;
+            --otk-viewer-header-border-color: #555;
+            --otk-viewer-quote1-header-border-color: #343434; /* For depth 1 quote headers */
+            --otk-msg-depth0-bg-color: #343434;
+            --otk-msg-depth1-bg-color: #525252;
+            --otk-msg-depth2plus-bg-color: #484848;
+            --otk-msg-depth0-text-color: #e6e6e6;
+            --otk-msg-depth1-text-color: #e6e6e6;
+            --otk-msg-depth2plus-text-color: #e6e6e6;
+            --otk-msg-depth0-header-text-color: #e6e6e6;
+            --otk-msg-depth1-header-text-color: #e6e6e6;
+            --otk-msg-depth2plus-header-text-color: #e6e6e6;
+            --otk-viewer-message-font-size: 13px; /* Default font size for message text */
+            --otk-gui-bottom-border-color: #555; /* Default for GUI bottom border */
+            /* Add more variables here as they are identified */
+        }
+
         .${ANCHORED_MESSAGE_CLASS} {
             background-color: #4a4a3a !important; /* Slightly noticeable dark yellow/greenish */
             border: 1px solid #FFD700 !important;
@@ -2899,6 +4205,9 @@ async function main() {
     `;
     document.head.appendChild(styleElement);
     consoleLog("Injected CSS for anchored messages.");
+
+    setupOptionsWindow(); // Call to create the options window shell and event listeners
+    applyThemeSettings(); // Apply any saved theme settings
 
     consoleLog('Attempting to call setupLoadingScreen...');
     setupLoadingScreen(); // Create loading screen elements early
