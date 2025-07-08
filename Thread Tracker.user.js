@@ -2463,7 +2463,7 @@ messageDiv.style.cssText = `
                         consoleError(`[BG] Error fetching thread ${threadId}:`, result.value.error);
                         return;
                     }
-                    
+
                     // consoleLog(`[BG] Processing fetched messages for thread ${threadId}. Result:`, newMessages); // Original log
                     // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - About to process newMessages for thread:', threadId, 'Value:', JSON.stringify(newMessages)); // Removed
 
@@ -3438,14 +3438,14 @@ function setupOptionsWindow() {
     trackedKeywordsLabel.textContent = "Tracked Keyword(s):";
     trackedKeywordsLabel.htmlFor = 'otk-tracked-keywords-input';
     // Ensure label is explicitly in grid column 1
-    trackedKeywordsLabel.style.cssText = "min-width: 160px; text-align: right; /* margin-right: 5px; gap handles spacing */ font-size: 12px; grid-column: 1;"; 
+    trackedKeywordsLabel.style.cssText = "min-width: 160px; text-align: right; /* margin-right: 5px; gap handles spacing */ font-size: 12px; grid-column: 1;";
 
     const trackedKeywordsInput = document.createElement('input');
     trackedKeywordsInput.type = 'text';
     trackedKeywordsInput.id = 'otk-tracked-keywords-input';
     trackedKeywordsInput.placeholder = "e.g., otk, item2, phrase three";
     // Input takes full width of its grid cell (1fr)
-    trackedKeywordsInput.style.cssText = "width: 100%; height: 25px; box-sizing: border-box; font-size: 12px; grid-column: 2;"; 
+    trackedKeywordsInput.style.cssText = "width: 100%; height: 25px; box-sizing: border-box; font-size: 12px; grid-column: 2;";
     trackedKeywordsInput.value = localStorage.getItem(OTK_TRACKED_KEYWORDS_KEY) || "otk"; // Load saved value or default
 
     // Wrapper is not needed with CSS Grid here
@@ -3486,7 +3486,7 @@ function setupOptionsWindow() {
     // No max attribute for UI
     bgUpdateFreqInput.step = '0.5'; // Step by half a minute for simplicity, can be 0.1
     // Input styling for grid column 2 - allow it to take available space but also set a max-width if desired, or start alignment
-    bgUpdateFreqInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box; font-size: 12px; grid-column: 2; justify-self: start;"; 
+    bgUpdateFreqInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box; font-size: 12px; grid-column: 2; justify-self: start;";
 
     // Wrapper is not needed with CSS Grid here
 
@@ -3550,7 +3550,7 @@ function setupOptionsWindow() {
     debugToggleCheckbox.type = 'checkbox';
     debugToggleCheckbox.id = 'otk-debug-mode-checkbox';
     // Checkbox styling for grid column 2 - use justify-self to align it left within its cell
-    debugToggleCheckbox.style.cssText = "height: 16px; width: 16px; grid-column: 2; justify-self: start;"; 
+    debugToggleCheckbox.style.cssText = "height: 16px; width: 16px; grid-column: 2; justify-self: start;";
     debugToggleCheckbox.checked = DEBUG_MODE;
 
     // Wrapper is not needed with CSS Grid here
@@ -3593,11 +3593,11 @@ function setupOptionsWindow() {
     const themeSectionHeading = document.createElement('h4');
     themeSectionHeading.textContent = '► Theme'; // Changed text and added indicator
     themeSectionHeading.style.cssText = `
-        margin-top: 0; 
-        margin-bottom: 10px; 
-        border-bottom: 1px solid #555; 
-        padding-bottom: 5px; 
-        cursor: pointer; 
+        margin-top: 0;
+        margin-bottom: 10px;
+        border-bottom: 1px solid #555;
+        padding-bottom: 5px;
+        cursor: pointer;
         user-select: none;
     `;
     themeSection.appendChild(themeSectionHeading);
@@ -3607,7 +3607,7 @@ function setupOptionsWindow() {
     themeOptionsContainer.id = 'otk-theme-options-container';
     themeOptionsContainer.style.display = 'none'; // Hidden by default
     // Apply scrolling properties to this container instead of themeSection directly
-    themeOptionsContainer.style.cssText += ` 
+    themeOptionsContainer.style.cssText += `
         display: none; /* Reiterate, will be toggled */
         flex-direction: column;
         /* gap: 10px; Will be handled by margins/padding of new structure or individual rows */
@@ -3688,7 +3688,7 @@ function setupOptionsWindow() {
         }
 
         // Event handling
-        const updateSetting = (value) => {
+        const updateSetting = (value, fromColorPicker = false) => { // Added fromColorPicker flag
             let processedValue = value.trim();
             if (options.inputType === 'color') {
                 if (!/^#[0-9A-F]{6}$/i.test(processedValue) && !/^#[0-9A-F]{3}$/i.test(processedValue)) {
@@ -3699,8 +3699,12 @@ function setupOptionsWindow() {
                     mainInput.value = currentSaved;
                     return;
                 }
-                if (hexInput) hexInput.value = processedValue;
-                mainInput.value = processedValue; // Color picker
+                // If the update is coming from the color picker, hexInput.value is already correct via its own listener.
+                // If the update is from hexInput, update mainInput (color picker).
+                if (!fromColorPicker && hexInput) mainInput.value = processedValue;
+                // If the update is from color picker, update hexInput.
+                if (fromColorPicker && hexInput) hexInput.value = processedValue;
+
             } else if (options.inputType === 'number') {
                 const numValue = parseInt(processedValue, 10);
                 if (isNaN(numValue) || (options.min !== undefined && numValue < options.min) || (options.max !== undefined && numValue > options.max)) {
@@ -3726,11 +3730,11 @@ function setupOptionsWindow() {
             }
         };
 
-        if (hexInput) { // For color inputs, hex field drives mainInput for validation convenience
-            hexInput.addEventListener('input', (e) => updateSetting(e.target.value));
-            mainInput.addEventListener('input', (e) => { // Color picker change also updates hex
-                hexInput.value = e.target.value;
-                updateSetting(e.target.value);
+        if (hexInput) { // For color inputs
+            hexInput.addEventListener('change', (e) => updateSetting(e.target.value, false)); // Fire on change (blur/enter)
+            mainInput.addEventListener('input', (e) => { // Color picker updates continuously
+                // hexInput.value = e.target.value; // Update hex field immediately as picker changes
+                updateSetting(e.target.value, true); // Pass flag true
             });
         } else { // For number inputs
             mainInput.addEventListener('change', (e) => updateSetting(e.target.value));
@@ -3891,18 +3895,11 @@ function setupOptionsWindow() {
              });
         }
 
-        consoleLog('[Debug Save Theme] currentActiveSettings before saving:', JSON.parse(JSON.stringify(currentActiveSettings)));
-        if (currentActiveSettings.viewerQuote1HeaderBorderColor) {
-            consoleLog(`  > viewerQuote1HeaderBorderColor in currentActiveSettings: ${currentActiveSettings.viewerQuote1HeaderBorderColor}`);
-        } else {
-            consoleLog(`  > viewerQuote1HeaderBorderColor NOT in currentActiveSettings. Will rely on computed/default.`);
-        }
-        if (currentActiveSettings.viewerQuote2plusHeaderBorderColor) {
-            consoleLog(`  > viewerQuote2plusHeaderBorderColor in currentActiveSettings: ${currentActiveSettings.viewerQuote2plusHeaderBorderColor}`);
-        } else {
-            consoleLog(`  > viewerQuote2plusHeaderBorderColor NOT in currentActiveSettings. Will rely on computed/default.`);
-        }
-
+        // consoleLog('[Debug Save Theme] Final currentActiveSettings object that will be saved for custom theme:', JSON.parse(JSON.stringify(currentActiveSettings))); // Retained original, more concise log
+        // The more verbose [SaveThemeDebug] logs are removed by this diff.
+        // The check for specific border colors can also be removed if not essential for general operation.
+        // For now, let's keep the original single debug line for the final object.
+        consoleLog('[Debug Save Theme] Final currentActiveSettings for custom theme:', JSON.parse(JSON.stringify(currentActiveSettings)));
 
         let customThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || [];
         const existingThemeIndex = customThemes.findIndex(t => t.name === themeName);
@@ -3930,44 +3927,124 @@ function setupOptionsWindow() {
 
         dropdown.innerHTML = ''; // Clear existing options
 
+        // Add the "Revert to Active" / "Current Settings" option first
+        const revertOption = document.createElement('option');
+        revertOption.value = "__REVERT__"; // Special value
+        revertOption.textContent = "‹ Active Settings ›"; // Display text
+        dropdown.appendChild(revertOption);
+
         const customThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || [];
 
         if (customThemes.length === 0) {
-            const defaultOption = document.createElement('option');
-            defaultOption.textContent = "No Saved Themes";
-            defaultOption.disabled = true;
-            dropdown.appendChild(defaultOption);
+            // If no custom themes, the "Revert" option might be confusing or lonely.
+            // We can disable it or change its text, or simply let it be.
+            // For now, let it be. User can save a theme to make the list more useful.
+            // Alternatively, add a "No Saved Themes" disabled option after it.
+            const noThemesOption = document.createElement('option');
+            noThemesOption.textContent = "(No Saved Themes)";
+            noThemesOption.disabled = true;
+            dropdown.appendChild(noThemesOption);
         } else {
             customThemes.forEach(theme => {
                 const option = document.createElement('option');
-                option.value = theme.name;
+                option.value = theme.name; // Actual theme name
                 option.textContent = theme.name;
                 dropdown.appendChild(option);
             });
         }
+        dropdown.value = "__REVERT__"; // Ensure the revert option is selected by default
     }
     // Initial population of the dropdown when options window is set up
     populateCustomThemesDropdown();
 
-    loadThemeButton.addEventListener('click', () => {
-        const selectedThemeName = customThemesDropdown.value;
-        if (!selectedThemeName || customThemesDropdown.selectedOptions.length === 0 || customThemesDropdown.selectedOptions[0].disabled) {
-            alert("Please select a theme to load.");
-            return;
-        }
+    let prePreviewSettings = null; // To store settings before previewing a theme
+    let currentlyPreviewingThemeName = null; // To track which theme is being previewed
 
+    customThemesDropdown.addEventListener('change', () => {
+        const selectedValue = customThemesDropdown.value;
         const customThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || [];
-        const themeToLoad = customThemes.find(t => t.name === selectedThemeName);
 
-        if (!themeToLoad) {
-            alert(`Error: Theme "${selectedThemeName}" not found in storage.`);
+        if (selectedValue === "__REVERT__") {
+            if (prePreviewSettings) {
+                consoleLog("[PreviewTheme] Reverting to pre-preview settings.");
+                localStorage.setItem(THEME_SETTINGS_KEY, JSON.stringify(prePreviewSettings));
+                applyThemeSettings();
+                // prePreviewSettings = null; // Clear after reverting, or keep if user might toggle back and forth? Let's clear.
+                currentlyPreviewingThemeName = null;
+            } else {
+                // This case means "Active Settings" was selected but nothing was previewed yet,
+                // or it was re-selected after a load. Ensure current active settings are applied.
+                consoleLog("[PreviewTheme] 'Active Settings' selected. Ensuring current active settings are applied.");
+                const activeSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
+                localStorage.setItem(THEME_SETTINGS_KEY, JSON.stringify(activeSettings)); // Re-affirm
+                applyThemeSettings();
+                currentlyPreviewingThemeName = null;
+            }
+        } else { // A custom theme is selected for preview
+            const themeToPreview = customThemes.find(t => t.name === selectedValue);
+            if (themeToPreview) {
+                if (currentlyPreviewingThemeName === null) { // Only store pre-preview if not already previewing
+                    // Store current *active* settings (from THEME_SETTINGS_KEY) before applying preview
+                    prePreviewSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
+                    consoleLog("[PreviewTheme] Stored pre-preview settings:", JSON.parse(JSON.stringify(prePreviewSettings)));
+                }
+
+                consoleLog(`[PreviewTheme] Previewing theme "${selectedValue}". Settings:`, JSON.parse(JSON.stringify(themeToPreview.settings)));
+                // Apply theme settings for preview WITHOUT saving to THEME_SETTINGS_KEY yet.
+                // applyThemeSettings directly uses THEME_SETTINGS_KEY, so we need a way to apply settings without permanently saving them.
+                // Option 1: Modify applyThemeSettings to take an optional settings object.
+                // Option 2: Temporarily set THEME_SETTINGS_KEY, apply, then restore if needed (more complex).
+                // Let's go with Option 1. (This will require modifying applyThemeSettings later)
+
+                // For now, let's simulate by updating CSS vars and inputs directly from themeToPreview.settings
+                // This is a temporary approach until applyThemeSettings is refactored.
+                // This will be complex to do manually here.
+                //
+                // Revised approach for preview:
+                // 1. Store current active settings (from THEME_SETTINGS_KEY) into prePreviewSettings (if not already previewing).
+                // 2. Temporarily set THEME_SETTINGS_KEY to the preview theme's settings.
+                // 3. Call applyThemeSettings(). This will make the preview active.
+                // 4. The "Load" button will make this temporary state permanent.
+                // 5. Selecting "__REVERT__" will restore THEME_SETTINGS_KEY from prePreviewSettings and call applyThemeSettings().
+
+                localStorage.setItem(THEME_SETTINGS_KEY, JSON.stringify(themeToPreview.settings)); // Temporarily set for applyThemeSettings
+                applyThemeSettings();
+                currentlyPreviewingThemeName = selectedValue;
+            }
+        }
+    });
+
+    loadThemeButton.addEventListener('click', () => {
+        const selectedThemeNameInDropdown = customThemesDropdown.value;
+
+        if (selectedThemeNameInDropdown === "__REVERT__") {
+            alert("Cannot 'load' the active settings. They are already active or have been reverted. Select a custom theme to load.");
             return;
         }
 
-        localStorage.setItem(THEME_SETTINGS_KEY, JSON.stringify(themeToLoad.settings));
-        applyThemeSettings(); // This will update CSS variables and all input fields
-        alert(`Theme "${selectedThemeName}" loaded successfully!`);
-        consoleLog(`Custom theme "${selectedThemeName}" loaded and applied.`);
+        if (!selectedThemeNameInDropdown || customThemesDropdown.selectedOptions.length === 0 || (customThemesDropdown.selectedOptions[0] && customThemesDropdown.selectedOptions[0].disabled)) {
+            alert("Please select a theme from the dropdown to load.");
+            return;
+        }
+
+        // At this point, if a theme was being previewed, its settings are already in THEME_SETTINGS_KEY
+        // and applied to the UI via applyThemeSettings() from the dropdown's 'change' listener.
+        // So, the "Load" action is effectively confirming the preview.
+        // We just need to ensure prePreviewSettings is cleared as the preview is now the active setting.
+
+        // consoleLog(`[LoadThemeDebug] Load button clicked. Theme "${selectedThemeNameInDropdown}" is now permanently active.`); // Removed
+        // THEME_SETTINGS_KEY already has the previewed theme's settings.
+        // applyThemeSettings() was already called when preview started.
+
+        // Standard log for this action:
+        consoleLog(`Theme "${selectedThemeNameInDropdown}" confirmed as active theme.`);
+        prePreviewSettings = null; // Clear pre-preview state as current settings are now committed.
+        currentlyPreviewingThemeName = null; // No longer just previewing.
+        customThemesDropdown.value = "__REVERT__"; // Set dropdown to show "Active Settings" as current state.
+
+        alert(`Theme "${selectedThemeNameInDropdown}" is now the active theme.`);
+        // No, we don't call applyThemeSettings() again unless THEME_SETTINGS_KEY changed, which it hasn't here.
+        // The settings from the preview *are* the new active settings.
     });
 
     deleteThemeButton.addEventListener('click', () => {
@@ -4049,7 +4126,7 @@ function setupOptionsWindow() {
 
             const mainInput = document.getElementById(`otk-${opt.idSuffix}`);
             const hexInput = opt.inputType === 'color' ? document.getElementById(`otk-${opt.idSuffix}-hex`) : null;
-            
+
             let cssDefaultValue = getComputedStyle(document.documentElement).getPropertyValue(opt.cssVariable)?.trim() || opt.defaultValue;
             if (opt.unit && cssDefaultValue.endsWith(opt.unit)) {
                 cssDefaultValue = cssDefaultValue.replace(opt.unit, '');
