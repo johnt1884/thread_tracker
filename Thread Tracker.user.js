@@ -24,6 +24,8 @@
     const ANCHORED_MESSAGE_CLASS = 'otk-anchored-message'; // CSS class for highlighting anchored message
     const MAX_QUOTE_DEPTH = 2; // Maximum depth for rendering nested quotes
     const SEEN_EMBED_URL_IDS_KEY = 'otkSeenEmbedUrlIds'; // For tracking unique text embeds for stats
+    const OTK_TRACKED_KEYWORDS_KEY = 'otkTrackedKeywords'; // For user-defined keywords
+    const OTK_BG_UPDATE_FREQ_SECONDS_KEY = 'otkBgUpdateFrequencySeconds'; // For background update frequency
 
     // --- Global variables ---
     let otkViewer = null;
@@ -35,6 +37,7 @@
     let lastViewerScrollTop = 0; // To store scroll position
     let renderedMessageIdsInViewer = new Set(); // To track IDs in viewer for incremental updates
     let uniqueImageViewerHashes = new Set(); // Global set for viewer's unique image hashes
+    let threadFetchMetadata = {}; // For ETags / Last-Modified dates { threadId: { etag: "...", lastModified: "..." } }
     // let uniqueVideoViewerHashes = new Set(); // Removed as obsolete
     let viewerTopLevelAttachedVideoHashes = new Set(); // Viewer session: Hashes of ATTACHED videos in top-level messages
     let viewerTopLevelEmbedIds = new Set(); // Viewer session: Canonical IDs of EMBEDDED videos in top-level messages
@@ -389,7 +392,8 @@ function createTwitchEmbedElement(type, id, timestampStr) {
 
 function createStreamableEmbedElement(videoId) {
     // Streamable embed URL format is typically https://streamable.com/e/VIDEO_ID
-    const embedUrl = `https://streamable.com/e/${videoId}`;
+    // Attempting to add loop=0 to disable looping.
+    const embedUrl = `https://streamable.com/e/${videoId}?loop=0`;
 
     const wrapper = document.createElement('div');
     wrapper.className = 'otk-streamable-embed-wrapper otk-embed-inline'; // Common class for fixed-size embeds
@@ -633,6 +637,7 @@ function createStreamableEmbedElement(videoId) {
             cursor: pointer;
             display: inline-block; /* Allows margin and proper alignment */
             vertical-align: middle; /* Aligns cog with text better */
+            color: var(--otk-cog-icon-color); /* Apply cog icon color variable */
         `;
         cogIcon.title = "Open Settings";
 
@@ -782,7 +787,7 @@ function createStreamableEmbedElement(videoId) {
             cogIcon.id = 'otk-settings-cog'; // Ensure ID is consistent if needed for re-binding
             cogIcon.innerHTML = '&#x2699;';
             cogIcon.style.cssText = `
-                font-size: 16px; margin-left: 10px; cursor: pointer; display: inline-block; vertical-align: middle;
+                font-size: 16px; margin-left: 10px; cursor: pointer; display: inline-block; vertical-align: middle; color: var(--otk-cog-icon-color);
             `;
             cogIcon.title = "Open Settings";
             // Note: Event listener for cog a V2 feature, or needs to be re-attached if GUI is rebuilt this way.
@@ -1559,8 +1564,8 @@ messageDiv.style.cssText = `
             headerBorderVar = 'var(--otk-viewer-header-border-color)';
         } else if (currentDepth === 1) { // Depth 1 quote
             headerBorderVar = 'var(--otk-viewer-quote1-header-border-color)';
-        } else { // Deeper quotes can use the same as depth 1 or a new variable if desired later
-            headerBorderVar = 'var(--otk-viewer-quote1-header-border-color)';
+        } else { // Depth 2+ quotes
+            headerBorderVar = 'var(--otk-viewer-quote2plus-header-border-color)';
         }
 
         messageHeader.style.cssText = `
@@ -2083,11 +2088,11 @@ messageDiv.style.cssText = `
         if (messagesContainer.children.length > 0 && newMessages.length > 0) {
             const separatorDiv = document.createElement('div');
             separatorDiv.style.cssText = `
-                border-top: 2px dashed #FFD700;
+                border-top: 2px dashed var(--otk-new-messages-divider-color);
                 margin: 20px 0;
                 padding-top: 10px;
                 text-align: center;
-                color: #FFD700;
+                color: var(--otk-new-messages-font-color);
                 font-size: 12px;
                 font-style: italic;
             `;
@@ -2161,19 +2166,32 @@ messageDiv.style.cssText = `
             const catalog = await response.json();
 
             let foundThreads = [];
+            const keywordsString = localStorage.getItem(OTK_TRACKED_KEYWORDS_KEY) || "otk";
+            const keywords = keywordsString.split(',')
+                .map(k => k.trim().toLowerCase())
+                .filter(k => k.length > 0);
+
+            if (keywords.length === 0) { // Should not happen if default is "otk" but as a safeguard
+                consoleWarn("scanCatalog: No valid keywords configured. Defaulting to 'otk'.");
+                keywords.push("otk");
+            }
+            consoleLog(`scanCatalog: Using keywords for search: [${keywords.join(', ')}]`);
+
             catalog.forEach(page => {
                 page.threads.forEach(thread => {
-                    let title = thread.sub || '';
-                    let com = thread.com || '';
-                    if ((title + com).toLowerCase().includes('otk')) {
+                    let title = (thread.sub || '').toLowerCase();
+                    let com = (thread.com || '').toLowerCase();
+                    const combinedText = title + " " + com;
+
+                    if (keywords.some(keyword => combinedText.includes(keyword))) {
                         foundThreads.push({
                             id: Number(thread.no),
-                            title: title || `Thread ${thread.no}` // Ensure title exists
+                            title: thread.sub || `Thread ${thread.no}` // Store original case title
                         });
                     }
                 });
             });
-            consoleLog(`scanCatalog: Found ${foundThreads.length} OTK threads:`, foundThreads.map(t => t.id));
+            consoleLog(`scanCatalog: Found ${foundThreads.length} threads matching keywords:`, foundThreads.map(t => t.id));
             return foundThreads;
         } catch (error) {
             consoleError('scanCatalog error:', error);
@@ -2182,16 +2200,72 @@ messageDiv.style.cssText = `
     }
 
     async function fetchThreadMessages(threadId) {
+        // consoleLog('[DebugRefreshV2-FTM] START for threadId:', threadId); // Removed
         const url = `https://a.4cdn.org/b/thread/${threadId}.json`;
+        const headers = {}; // Initialize empty headers object
+        const metadata = threadFetchMetadata[threadId];
+
+        if (metadata) {
+            // consoleLog('[DebugRefreshV2-FTM] Preparing headers for threadId:', threadId, 'Current metadata:', JSON.stringify(metadata)); // Removed
+            if (metadata.etag) {
+                headers['If-None-Match'] = metadata.etag;
+                // consoleLog('[DebugRefreshV2-FTM] Sending If-None-Match for', threadId, ':', headers['If-None-Match']); // Removed
+            } else if (metadata.lastModified) {
+                headers['If-Modified-Since'] = metadata.lastModified;
+                // consoleLog('[DebugRefreshV2-FTM] Sending If-Modified-Since for', threadId, ':', headers['If-Modified-Since']); // Removed
+            }
+        } else {
+            // consoleLog('[DebugRefreshV2-FTM] No metadata found for threadId:', threadId, 'Performing full fetch.'); // Removed
+        }
+
+        let response;
         try {
-            const response = await fetch(url, { cache: 'no-store' });
-            if (!response.ok) {
-                consoleLog(`fetchThreadMessages: Thread ${threadId} not found (Status: ${response.status}). Likely pruned or deleted.`);
+            response = await fetch(url, { headers: headers });
+            // consoleLog('[DebugRefreshV2-FTM] Response status for', threadId, ':', response.status, 'OK:', response.ok); // Removed
+
+            if (response.status === 304) {
+                consoleLog(`Thread ${threadId} not modified (304).`); // Standard log
+                // consoleLog('[DebugRefreshV2-FTM] Handling 304 - RETURNING NOT_MODIFIED for threadId:', threadId); // Removed
+                return { status: 'not_modified', threadId: threadId };
+            }
+
+            if (!response.ok) { // Handles non-304 errors
+                consoleWarn(`Fetch error for thread ${threadId}: ${response.status} ${response.statusText}`); // Standard log
+                // consoleLog('[DebugRefreshV2-FTM] Response NOT OK (and not 304) for', threadId, '- Status:', response.status, 'RETURNING [].'); // Removed
+                if (response.status === 404) {
+                    delete threadFetchMetadata[threadId]; // Clear metadata on 404
+                }
                 return [];
             }
+
+            // If response is OK (200), store new ETag/Last-Modified
+            const newEtag = response.headers.get('ETag');
+            const newLastModified = response.headers.get('Last-Modified');
+
+            if (newEtag || newLastModified) {
+                threadFetchMetadata[threadId] = {}; // Initialize/clear existing for this thread
+                if (newEtag) {
+                    threadFetchMetadata[threadId].etag = newEtag;
+                }
+                if (newLastModified) {
+                    threadFetchMetadata[threadId].lastModified = newLastModified;
+                }
+                // consoleLog('[DebugRefreshV2-FTM] Stored new metadata for threadId:', threadId, 'New metadata:', JSON.stringify(threadFetchMetadata[threadId])); // Removed
+                consoleLog(`Stored new ETag/Last-Modified for thread ${threadId}.`); // Standard log
+            } else {
+                // consoleLog('[DebugRefreshV2-FTM] No new ETag/Last-Modified headers found on 200 OK for threadId:', threadId); // Removed
+                if (metadata) { // Only clear if old metadata existed and server stopped sending new ones
+                    // consoleLog('[DebugRefreshV2-FTM] Clearing old metadata for threadId:', threadId, 'as no new headers were provided.'); // Removed
+                    consoleLog(`No new ETag/Last-Modified for thread ${threadId}, clearing old metadata.`); // Standard log
+                    delete threadFetchMetadata[threadId];
+                }
+            }
+
             const threadData = await response.json();
+            // consoleLog('[DebugRefreshV2-FTM] Successfully got JSON for threadId:', threadId, 'Post count in JSON:', threadData.posts ? threadData.posts.length : 'N/A'); // Removed
             if (!threadData.posts || threadData.posts.length === 0) {
-                consoleLog(`fetchThreadMessages: No posts in thread ${threadId}.`);
+                // consoleLog('[DebugRefreshV2-FTM] No posts in JSON (after 200 OK) for threadId:', threadId, 'RETURNING [].'); // Removed
+                consoleLog(`No posts in JSON for thread ${threadId}.`); // Standard log
                 return [];
             }
 
@@ -2324,9 +2398,11 @@ messageDiv.style.cssText = `
                 }
                 processedMessages.push(message);
             }
+            consoleLog('[DebugRefreshV2-FTM] Successfully processed messages for threadId:', threadId, 'RETURNING message count:', processedMessages.length, 'First message ID (if any):', processedMessages.length > 0 ? processedMessages[0].id : 'N/A');
             return processedMessages;
         } catch (error) {
             consoleError(`fetchThreadMessages error for thread ${threadId}:`, error);
+            consoleLog('[DebugRefreshV2-FTM] CATCH block for threadId:', threadId, 'Error:', error.message, 'RETURNING [].');
             return [];
         }
     }
@@ -2368,43 +2444,63 @@ messageDiv.style.cssText = `
             });
             consoleLog(`[BG] Active threads after catalog sync: ${activeThreads.length}`, activeThreads);
 
-            for (const threadId of [...activeThreads]) {
-                consoleLog(`[BG] Fetching messages for thread ${threadId}...`);
-                let newMessages = await fetchThreadMessages(threadId);
-                consoleLog(`[BG] Fetched ${newMessages.length} messages for thread ${threadId}.`);
+            const fetchPromisesBg = activeThreads.map(threadId =>
+                fetchThreadMessages(threadId)
+                    .then(messages => ({ threadId, messages, status: 'fulfilled' }))
+                    .catch(error => ({ threadId, error, status: 'rejected' }))
+            );
 
-                if (newMessages.length > 0) {
-                    let existing = messagesByThreadId[threadId] || [];
-                    let existingIds = new Set(existing.map(m => m.id));
-                    let updatedMessages = [...existing]; // Start with existing
+            const resultsBg = await Promise.allSettled(fetchPromisesBg);
 
-                    newMessages.forEach(m => {
-                        if (!existingIds.has(m.id)) {
-                            updatedMessages.push(m);
-                            // existingIds.add(m.id); // Not strictly needed here as we rebuild `merged`
-                        } else {
-                            // Optionally update existing message if needed, though 4chan posts are immutable mostly
+            resultsBg.forEach(result => {
+                // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - Raw Promise.allSettled result:', JSON.stringify(result)); // Removed
+                if (result.status === 'fulfilled' && result.value) {
+                    // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - Fulfilled promise value:', JSON.stringify(result.value)); // Removed
+                    const { threadId, messages: newMessages, status: fetchStatus } = result.value;
+                    // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - Destructured - threadId:', threadId, 'fetchStatus (from wrapper):', fetchStatus, 'newMessages type:', typeof newMessages, 'is Array?:', Array.isArray(newMessages), 'length (if array):', Array.isArray(newMessages) ? newMessages.length : 'N/A'); // Removed
+
+                    if (fetchStatus === 'rejected') {
+                        consoleError(`[BG] Error fetching thread ${threadId}:`, result.value.error);
+                        return;
+                    }
+                    
+                    // consoleLog(`[BG] Processing fetched messages for thread ${threadId}. Result:`, newMessages); // Original log
+                    // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - About to process newMessages for thread:', threadId, 'Value:', JSON.stringify(newMessages)); // Removed
+
+                    // Handle 'not_modified' status from fetchThreadMessages
+                    if (newMessages && typeof newMessages === 'object' && newMessages.status === 'not_modified' && newMessages.threadId === threadId) {
+                        consoleLog(`[BG] Thread ${threadId} was not modified. Skipping message update for this thread.`);
+                    } else if (Array.isArray(newMessages) && newMessages.length > 0) { // Regular message array
+                        // consoleLog(`[DebugRefreshV2][BG] backgroundRefresh - Processing ${newMessages.length} messages for thread ${threadId}.`); // Removed
+                        consoleLog(`[BG] Processing ${newMessages.length} messages for thread ${threadId}.`); // Standard log
+                        let existing = messagesByThreadId[threadId] || [];
+                        let existingIds = new Set(existing.map(m => m.id));
+                        let updatedMessages = [...existing];
+                        newMessages.forEach(m => {
+                            if (!existingIds.has(m.id)) {
+                                updatedMessages.push(m);
+                            }
+                        });
+                        updatedMessages.sort((a, b) => a.time - b.time);
+                        messagesByThreadId[threadId] = updatedMessages;
+                        if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
+                            messagesByThreadId[threadId][0].title = newMessages[0].title;
                         }
-                    });
-                    updatedMessages.sort((a, b) => a.time - b.time);
-                    messagesByThreadId[threadId] = updatedMessages;
-                     // Ensure OP's title is used for the thread if messagesByThreadId was empty
-                    if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
-                         messagesByThreadId[threadId][0].title = newMessages[0].title;
+                    } else if (newMessages && newMessages.length === 0) {
+                        consoleLog(`[BG] No new messages returned or thread is empty for active thread ${threadId}.`);
+                        // Note: Thread pruning logic based on catalog scan is primary.
+                        // If fetchThreadMessages returns empty for a 404, it might have been removed from activeThreads already by catalog logic.
+                        // If it's still active here, it means the catalog saw it, but it's empty or was just pruned.
+                        // We don't remove it from activeThreads here solely based on empty messages if catalog still lists it.
+                        // The original logic to remove from activeThreads if no messages returned was a bit aggressive here.
+                        // The catalog scan is the authority for active threads.
                     }
-
-                } else {
-                    // Thread might have 404'd since catalog scan
-                    if (activeThreads.includes(Number(threadId))) { // Check if it was really active
-                        consoleLog(`[BG] No messages returned for active thread ${threadId}. It might have been pruned. Removing.`);
-                        activeThreads = activeThreads.filter(id => id !== Number(threadId));
-                        delete messagesByThreadId[threadId];
-                        delete threadColors[threadId];
-                    }
+                } else if (result.status === 'rejected') {
+                    consoleError(`[BG] Promise rejected for a thread fetch operation:`, result.reason);
                 }
-            }
+            });
 
-            consoleLog(`[BG] Final active threads after message fetch: ${activeThreads.length}`, activeThreads);
+            consoleLog(`[BG] Final active threads after message processing: ${activeThreads.length}`, activeThreads);
             consoleLog('[BG] Saving data to localStorage...');
             localStorage.setItem(THREADS_KEY, JSON.stringify(activeThreads));
             localStorage.setItem(MESSAGES_KEY, JSON.stringify(messagesByThreadId));
@@ -2458,43 +2554,88 @@ messageDiv.style.cssText = `
 
             const totalThreadsToFetch = activeThreads.length;
             let threadsFetched = 0;
+    const fetchPromises = activeThreads.map(threadId => {
+        // Update progress inside the map for better granularity if needed, or outside before Promise.allSettled
+        // For simplicity, initial progress update can be before this map.
+        // Detailed progress can be updated as promises resolve.
+        return fetchThreadMessages(threadId).then(messages => ({ threadId, messages, status: 'fulfilled' }))
+            .catch(error => ({ threadId, error, status: 'rejected' }));
+    });
 
-            for (const threadId of [...activeThreads]) {
-                threadsFetched++;
-                const baseProgress = 20; // After catalog scan
-                const loopProgress = totalThreadsToFetch > 0 ? (threadsFetched / totalThreadsToFetch) * 70 : 70; // 70% of progress for fetching
-                updateLoadingProgress(baseProgress + loopProgress, `Fetching thread ${threadsFetched} of ${totalThreadsToFetch} (${threadId})...`);
+    updateLoadingProgress(30, `Fetching data for ${activeThreads.length} threads concurrently...`);
 
-                consoleLog(`[Manual] Fetching messages for thread ${threadId}...`);
-                let newMessages = await fetchThreadMessages(threadId);
-                consoleLog(`[Manual] Fetched ${newMessages.length} messages for thread ${threadId}.`);
+    const results = await Promise.allSettled(fetchPromises);
+    let currentProgress = 30;
+    const progressIncrement = results.length > 0 ? 60 / results.length : 0; // 60% of progress for processing results
 
-                if (newMessages.length > 0) {
-                    let existing = messagesByThreadId[threadId] || [];
-                    let existingIds = new Set(existing.map(m => m.id));
-                    let updatedMessages = [...existing];
-                    newMessages.forEach(m => {
-                        if (!existingIds.has(m.id)) {
-                            updatedMessages.push(m);
-                        }
-                    });
-                    updatedMessages.sort((a, b) => a.time - b.time);
-                    messagesByThreadId[threadId] = updatedMessages;
-                    if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
-                         messagesByThreadId[threadId][0].title = newMessages[0].title;
-                    }
-                } else {
-                     if (activeThreads.includes(Number(threadId))) {
-                        consoleLog(`[Manual] No messages for active thread ${threadId}. Removing.`);
-                        activeThreads = activeThreads.filter(id => id !== Number(threadId));
-                        delete messagesByThreadId[threadId];
-                        delete threadColors[threadId];
-                    }
-                }
+    results.forEach(result => {
+        currentProgress += progressIncrement;
+        updateLoadingProgress(currentProgress, `Processing fetched thread data...`);
+        // consoleLog('[DebugRefreshV2] refreshThreadsAndMessages - Raw Promise.allSettled result:', JSON.stringify(result)); // Removed
+
+        if (result.status === 'fulfilled' && result.value) {
+            // consoleLog('[DebugRefreshV2] refreshThreadsAndMessages - Fulfilled promise value:', JSON.stringify(result.value)); // Removed
+            const { threadId, messages: newMessages, status: fetchStatus } = result.value; // status here is from our wrapper
+            // consoleLog('[DebugRefreshV2] refreshThreadsAndMessages - Destructured - threadId:', threadId, 'fetchStatus (from wrapper):', fetchStatus, 'newMessages type:', typeof newMessages, 'is Array?:', Array.isArray(newMessages), 'length (if array):', Array.isArray(newMessages) ? newMessages.length : 'N/A'); // Removed
+
+            if (fetchStatus === 'rejected') { // Handle errors caught by our .catch in the map
+                consoleError(`[Manual] Error fetching thread ${threadId}:`, result.value.error);
+                // Optionally remove thread if fetch failed significantly, though catalog scan is main source of truth for active
+                return; // Skip processing this thread
             }
 
-            consoleLog(`[Manual] Final active threads after message fetch: ${activeThreads.length}`, activeThreads);
-            localStorage.setItem(THREADS_KEY, JSON.stringify(activeThreads));
+            // consoleLog(`[Manual] Processing fetched messages for thread ${threadId}. Result:`, newMessages); // Original log, can be removed or kept
+            // consoleLog('[DebugRefreshV2] refreshThreadsAndMessages - About to process newMessages for thread:', threadId, 'Value:', JSON.stringify(newMessages)); // Removed
+
+
+            // Handle 'not_modified' status from fetchThreadMessages
+            if (newMessages && typeof newMessages === 'object' && newMessages.status === 'not_modified' && newMessages.threadId === threadId) {
+                consoleLog(`[Manual] Thread ${threadId} was not modified. Skipping message update for this thread.`);
+                // Ensure thread remains in activeThreads if it wasn't pruned by catalog scan - this is handled by catalog logic primarily
+            } else if (Array.isArray(newMessages) && newMessages.length > 0) { // Regular message array
+                // consoleLog(`[DebugRefreshV2] refreshThreadsAndMessages - Processing ${newMessages.length} messages for thread ${threadId}.`); // Removed
+                consoleLog(`[Manual] Processing ${newMessages.length} messages for thread ${threadId}.`); // Standard log
+                let existing = messagesByThreadId[threadId] || [];
+                let existingIds = new Set(existing.map(m => m.id));
+                let updatedMessages = [...existing];
+                newMessages.forEach(m => {
+                    if (!existingIds.has(m.id)) {
+                        updatedMessages.push(m);
+                    }
+                });
+                updatedMessages.sort((a, b) => a.time - b.time);
+                messagesByThreadId[threadId] = updatedMessages;
+                if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
+                    messagesByThreadId[threadId][0].title = newMessages[0].title;
+                        }
+            } else if (newMessages && newMessages.length === 0) { // Explicitly zero messages returned, not 'not_modified'
+                // This means thread was fetched, but it's empty or an issue occurred returning empty array.
+                // If it's still in activeThreads (from catalog), it implies it might have been pruned just now or is new & empty.
+                // The catalog scan is the primary source for removing threads.
+                // If fetchThreadMessages returns empty for a 404, that's handled there.
+                // Here, if it's still active, we just note no new messages.
+                consoleLog(`[Manual] No new messages returned or thread is empty for active thread ${threadId}.`);
+                    }
+            // If newMessages is null/undefined (and not 'not_modified'), it implies an issue caught by our wrapper.
+            // Already handled by fetchStatus === 'rejected' check.
+
+        } else if (result.status === 'rejected') {
+            // This catches errors if fetchThreadMessages itself throws unhandled or if Promise.allSettled has issues with a promise
+            consoleError(`[Manual] Promise rejected for a thread fetch operation:`, result.reason);
+            // Potentially find threadId if it's part of result.reason, though our wrapper should prevent this branch mostly
+                }
+    });
+
+    // Re-filter activeThreads based on whether messagesByThreadId still has entries for them,
+    // as some might have been implicitly removed if fetchThreadMessages indicated a 404 (by returning empty array and being handled by prior logic)
+    // However, catalog scan is the main authority. This step might be redundant if catalog scan is robust.
+    // For now, let's assume catalog scan + the processing logic above correctly maintains activeThreads.
+    // activeThreads = activeThreads.filter(id => messagesByThreadId[id] && messagesByThreadId[id].length > 0);
+    // This filtering above is too aggressive. A thread can be active and have 0 messages temporarily.
+    // The main pruning of activeThreads happens after catalog scan.
+
+    consoleLog(`[Manual] Final active threads after message processing: ${activeThreads.length}`, activeThreads);
+    localStorage.setItem(THREADS_KEY, JSON.stringify(activeThreads)); // activeThreads is already updated by catalog sync
             localStorage.setItem(MESSAGES_KEY, JSON.stringify(messagesByThreadId));
             localStorage.setItem(COLORS_KEY, JSON.stringify(threadColors));
 
@@ -2565,9 +2706,17 @@ messageDiv.style.cssText = `
             localStorage.removeItem(COLORS_KEY);
             localStorage.removeItem(DROPPED_THREADS_KEY);
             localStorage.removeItem(SEEN_EMBED_URL_IDS_KEY); // Clear seen embed IDs
+            // localStorage.removeItem(THEME_SETTINGS_KEY); // Active theme settings are cleared
+            // localStorage.removeItem(CUSTOM_THEMES_KEY); // CUSTOM THEMES ARE PRESERVED
             localStorage.setItem(LOCAL_IMAGE_COUNT_KEY, '0'); // Reset image count
             localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, '0'); // Reset video count
-            consoleLog('[Clear] LocalStorage (including media counts and seen embeds) cleared/reset.');
+            // Note: THEME_SETTINGS_KEY (active theme) will be effectively reset when applyThemeSettings is called
+            // without pre-existing settings, or if we explicitly clear it.
+            // For a true "Restart" regarding active theme, THEME_SETTINGS_KEY should be cleared.
+            // Custom themes (CUSTOM_THEMES_KEY) must be preserved.
+            localStorage.removeItem(THEME_SETTINGS_KEY); // Clear current active theme settings
+            consoleLog('[Clear] LocalStorage (threads, messages, seen embeds, media counts, ACTIVE theme) cleared/reset. CUSTOM THEMES PRESERVED.');
+
 
             if (otkMediaDB) {
                 consoleLog('[Clear] Clearing IndexedDB mediaStore...');
@@ -2885,10 +3034,17 @@ messageDiv.style.cssText = `
             return;
         }
         if (backgroundRefreshIntervalId === null) { // Only start if not already running
-            backgroundRefreshIntervalId = setInterval(backgroundRefreshThreadsAndMessages, BACKGROUND_REFRESH_INTERVAL);
-            consoleLog(`Background refresh scheduled every ${BACKGROUND_REFRESH_INTERVAL / 1000} seconds.`);
+            let frequencySeconds = parseInt(localStorage.getItem(OTK_BG_UPDATE_FREQ_SECONDS_KEY) || "120", 10); // Default to 120s (2 min)
+            // Validate against the new effective range (120 seconds to 3600 seconds/1 hour)
+            if (isNaN(frequencySeconds) || frequencySeconds < 120 || frequencySeconds > 3600) {
+                frequencySeconds = 120; // Default (2 min) if stored value is invalid or out of overall bounds
+            }
+            const refreshIntervalMs = frequencySeconds * 1000;
+
+            backgroundRefreshIntervalId = setInterval(backgroundRefreshThreadsAndMessages, refreshIntervalMs);
+            consoleLog(`Background refresh scheduled every ${frequencySeconds} seconds.`);
         } else {
-            consoleLog('Background refresh interval already active.');
+            consoleLog('Background refresh interval already active (will use new frequency on next auto-restart if changed).');
         }
     }
 
@@ -3044,22 +3200,49 @@ function applyThemeSettings() {
         if (inputPicker) inputPicker.value = settings.guiThreadListTimeColor;
     }
 
-    // Viewer Header Border Color
+    // Viewer Header Border Color (Used for Depth 0 Message Header Underline)
     if (settings.viewerHeaderBorderColor) {
         document.documentElement.style.setProperty('--otk-viewer-header-border-color', settings.viewerHeaderBorderColor);
-        const hexInput = document.getElementById('otk-color-viewer-header-border-hex');
-        const picker = document.getElementById('otk-color-viewer-header-border-picker');
+        const hexInput = document.getElementById('otk-viewer-header-border-hex'); // idSuffix: 'viewer-header-border'
+        const picker = document.getElementById('otk-viewer-header-border');
         if (hexInput) hexInput.value = settings.viewerHeaderBorderColor;
         if (picker) picker.value = settings.viewerHeaderBorderColor;
     }
 
-    // Viewer Quote L1 Border Color
+    // Viewer Quote L1 Border Color (Used for Depth 1 Message Header Underline)
     if (settings.viewerQuote1HeaderBorderColor) {
+        consoleLog(`[Debug applyThemeSettings] Applying viewerQuote1HeaderBorderColor: ${settings.viewerQuote1HeaderBorderColor}`);
         document.documentElement.style.setProperty('--otk-viewer-quote1-header-border-color', settings.viewerQuote1HeaderBorderColor);
-        const hexInput = document.getElementById('otk-color-viewer-quote1-border-hex');
-        const picker = document.getElementById('otk-color-viewer-quote1-border-picker');
-        if (hexInput) hexInput.value = settings.viewerQuote1HeaderBorderColor;
-        if (picker) picker.value = settings.viewerQuote1HeaderBorderColor;
+        const hexInput = document.getElementById('otk-viewer-quote1-border-hex'); // idSuffix: 'viewer-quote1-border'
+        const picker = document.getElementById('otk-viewer-quote1-border');
+        if (hexInput) {
+            hexInput.value = settings.viewerQuote1HeaderBorderColor;
+            consoleLog(`  > Updated hex input ${hexInput.id} to: ${settings.viewerQuote1HeaderBorderColor}`);
+        } else { consoleLog(`  > Hex input otk-viewer-quote1-border-hex not found.`); }
+        if (picker) {
+            picker.value = settings.viewerQuote1HeaderBorderColor;
+            consoleLog(`  > Updated picker ${picker.id} to: ${settings.viewerQuote1HeaderBorderColor}`);
+        } else { consoleLog(`  > Picker otk-viewer-quote1-border not found.`); }
+    } else {
+        consoleLog(`[Debug applyThemeSettings] viewerQuote1HeaderBorderColor not in settings.`);
+    }
+
+    // Viewer Quote L2+ Border Color
+    if (settings.viewerQuote2plusHeaderBorderColor) {
+        consoleLog(`[Debug applyThemeSettings] Applying viewerQuote2plusHeaderBorderColor: ${settings.viewerQuote2plusHeaderBorderColor}`);
+        document.documentElement.style.setProperty('--otk-viewer-quote2plus-header-border-color', settings.viewerQuote2plusHeaderBorderColor);
+        const hexInput = document.getElementById('otk-viewer-quote2plus-border-hex'); // idSuffix: 'viewer-quote2plus-border'
+        const picker = document.getElementById('otk-viewer-quote2plus-border');
+        if (hexInput) {
+            hexInput.value = settings.viewerQuote2plusHeaderBorderColor;
+            consoleLog(`  > Updated hex input ${hexInput.id} to: ${settings.viewerQuote2plusHeaderBorderColor}`);
+        } else { consoleLog(`  > Hex input otk-viewer-quote2plus-border-hex not found.`); }
+        if (picker) {
+            picker.value = settings.viewerQuote2plusHeaderBorderColor;
+            consoleLog(`  > Updated picker ${picker.id} to: ${settings.viewerQuote2plusHeaderBorderColor}`);
+        } else { consoleLog(`  > Picker otk-viewer-quote2plus-border not found.`); }
+    } else {
+        consoleLog(`[Debug applyThemeSettings] viewerQuote2plusHeaderBorderColor not in settings.`);
     }
 
     // Message Background Colors
@@ -3118,6 +3301,43 @@ function applyThemeSettings() {
         if (hexInput) hexInput.value = settings.guiBottomBorderColor;
         if (picker) picker.value = settings.guiBottomBorderColor;
     }
+
+    // Cog Icon Color
+    if (settings.cogIconColor) {
+        document.documentElement.style.setProperty('--otk-cog-icon-color', settings.cogIconColor);
+        const hexInput = document.getElementById('otk-cog-icon-hex'); // Uses idSuffix from createThemeOptionRow
+        const picker = document.getElementById('otk-cog-icon');
+        if (hexInput) hexInput.value = settings.cogIconColor;
+        if (picker) picker.value = settings.cogIconColor;
+        // Also directly apply to the cog icon if it exists, as it's outside the options window
+        const cogIconElement = document.getElementById('otk-settings-cog');
+        if (cogIconElement) {
+            cogIconElement.style.color = settings.cogIconColor;
+        }
+    } else { // Handle case where it might be reset to default (null in settings)
+        const cogIconElement = document.getElementById('otk-settings-cog');
+        if (cogIconElement) {
+            cogIconElement.style.color = ''; // Clear inline style to use CSS variable's default
+        }
+    }
+
+    // New Messages Divider Color
+    if (settings.newMessagesDividerColor) {
+        document.documentElement.style.setProperty('--otk-new-messages-divider-color', settings.newMessagesDividerColor);
+        const hexInput = document.getElementById('otk-new-msg-divider-hex');
+        const picker = document.getElementById('otk-new-msg-divider');
+        if (hexInput) hexInput.value = settings.newMessagesDividerColor;
+        if (picker) picker.value = settings.newMessagesDividerColor;
+    }
+
+    // New Messages Font Color
+    if (settings.newMessagesFontColor) {
+        document.documentElement.style.setProperty('--otk-new-messages-font-color', settings.newMessagesFontColor);
+        const hexInput = document.getElementById('otk-new-msg-font-hex');
+        const picker = document.getElementById('otk-new-msg-font');
+        if (hexInput) hexInput.value = settings.newMessagesFontColor;
+        if (picker) picker.value = settings.newMessagesFontColor;
+    }
 }
 
 
@@ -3136,8 +3356,9 @@ function setupOptionsWindow() {
         position: fixed;
         top: 100px;
         left: 100px;
-        width: 400px; /* Initial width, can be adjusted */
-        min-height: 200px; /* Initial min-height */
+        width: 420px; /* Increased width slightly for scrollbar */
+        min-height: 150px; /* Minimum height when collapsed */
+        max-height: 550px; /* Maximum height when expanded (title + theme heading + theme options container max-height + paddings) */
         background-color: #2c2c2c; /* Slightly lighter than GUI for distinction */
         border: 1px solid #444;
         border-radius: 5px;
@@ -3163,7 +3384,7 @@ function setupOptionsWindow() {
         justify-content: space-between;
         align-items: center;
     `;
-    titleBar.textContent = 'Theme Options';
+    titleBar.textContent = 'Options'; // Changed title
 
     const closeButton = document.createElement('span');
     closeButton.id = 'otk-options-close-btn';
@@ -3191,910 +3412,660 @@ function setupOptionsWindow() {
     optionsWindow.appendChild(contentArea);
 
     // --- Main Sections Container (for tabs or collapsible sections later) ---
-    const sectionsContainer = document.createElement('div');
-    contentArea.appendChild(sectionsContainer);
+    // This container might not be strictly necessary anymore if we are just stacking sections.
+    // For now, let's keep it but add general settings directly to contentArea or sectionsContainer.
+    // Let's add general settings directly to contentArea, above the theme section.
+
+    const generalSettingsSection = document.createElement('div');
+    generalSettingsSection.id = 'otk-general-settings-section';
+    generalSettingsSection.style.cssText = `
+        display: flex;
+        flex-direction: column;
+        gap: 10px; /* Space between general option groups */
+        margin-bottom: 15px; /* Space before the theme section */
+    `;
+    contentArea.appendChild(generalSettingsSection); // Add general settings section first
+
+    // Add a heading for the General Settings section using the helper
+    generalSettingsSection.appendChild(createSectionHeading('General Settings'));
+
+    // --- Tracked Keyword(s) Option ---
+    const trackedKeywordsGroup = document.createElement('div');
+    // Apply CSS Grid styling
+    trackedKeywordsGroup.style.cssText = "display: grid; grid-template-columns: 165px 1fr; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
+
+    const trackedKeywordsLabel = document.createElement('label');
+    trackedKeywordsLabel.textContent = "Tracked Keyword(s):";
+    trackedKeywordsLabel.htmlFor = 'otk-tracked-keywords-input';
+    // Ensure label is explicitly in grid column 1
+    trackedKeywordsLabel.style.cssText = "min-width: 160px; text-align: right; /* margin-right: 5px; gap handles spacing */ font-size: 12px; grid-column: 1;"; 
+
+    const trackedKeywordsInput = document.createElement('input');
+    trackedKeywordsInput.type = 'text';
+    trackedKeywordsInput.id = 'otk-tracked-keywords-input';
+    trackedKeywordsInput.placeholder = "e.g., otk, item2, phrase three";
+    // Input takes full width of its grid cell (1fr)
+    trackedKeywordsInput.style.cssText = "width: 100%; height: 25px; box-sizing: border-box; font-size: 12px; grid-column: 2;"; 
+    trackedKeywordsInput.value = localStorage.getItem(OTK_TRACKED_KEYWORDS_KEY) || "otk"; // Load saved value or default
+
+    // Wrapper is not needed with CSS Grid here
+
+    trackedKeywordsInput.addEventListener('change', () => { // Save on change (after blur or Enter)
+        const valueToSave = trackedKeywordsInput.value.trim();
+        if (valueToSave) {
+            localStorage.setItem(OTK_TRACKED_KEYWORDS_KEY, valueToSave);
+            consoleLog(`Tracked keywords saved: ${valueToSave}`);
+        } else { // If input is cleared, revert to default and save that
+            localStorage.setItem(OTK_TRACKED_KEYWORDS_KEY, "otk");
+            trackedKeywordsInput.value = "otk"; // Reflect default in input
+            consoleLog(`Tracked keywords reset to default: "otk"`);
+        }
+        // Alert or indication that a page refresh might be needed for scanCatalog to pick up new words immediately
+        // For now, just saving. User would typically refresh data or page.
+    });
+
+    trackedKeywordsGroup.appendChild(trackedKeywordsLabel);
+    trackedKeywordsGroup.appendChild(trackedKeywordsInput); // Append input directly
+    generalSettingsSection.appendChild(trackedKeywordsGroup);
+
+    // --- Background Update Frequency Option ---
+    const bgUpdateFreqGroup = document.createElement('div');
+    // Apply CSS Grid styling
+    bgUpdateFreqGroup.style.cssText = "display: grid; grid-template-columns: 165px 1fr; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
+
+    const bgUpdateFreqLabel = document.createElement('label');
+    bgUpdateFreqLabel.textContent = "Update Frequency (min >= 2.0):"; // Updated label
+    bgUpdateFreqLabel.htmlFor = 'otk-bg-update-freq-input';
+    // Ensure label is explicitly in grid column 1
+    bgUpdateFreqLabel.style.cssText = "min-width: 160px; text-align: right; /* margin-right: 5px; gap handles spacing */ font-size: 12px; grid-column: 1;";
+
+    const bgUpdateFreqInput = document.createElement('input');
+    bgUpdateFreqInput.type = 'number';
+    bgUpdateFreqInput.id = 'otk-bg-update-freq-input';
+    bgUpdateFreqInput.min = '2.0'; // UI min in minutes (120 seconds)
+    // No max attribute for UI
+    bgUpdateFreqInput.step = '0.5'; // Step by half a minute for simplicity, can be 0.1
+    // Input styling for grid column 2 - allow it to take available space but also set a max-width if desired, or start alignment
+    bgUpdateFreqInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box; font-size: 12px; grid-column: 2; justify-self: start;"; 
+
+    // Wrapper is not needed with CSS Grid here
+
+    // Load stored value (in seconds), convert to minutes for display. Default to 120s (2.0 min).
+    let initialStoredFreqSeconds = parseInt(localStorage.getItem(OTK_BG_UPDATE_FREQ_SECONDS_KEY) || "120", 10);
+    // Ensure initial value respects the new minimum if an old, smaller value was stored
+    if (isNaN(initialStoredFreqSeconds) || initialStoredFreqSeconds < 120) {
+        initialStoredFreqSeconds = 120;
+    }
+    // An internal max for display purposes isn't strictly necessary if there's no UI max,
+    // but if a very large number of seconds was stored, it might look odd.
+    // We'll cap it at a large but reasonable number of minutes for display if needed, e.g. 1440 min (1 day)
+    // For now, just convert, the save logic will handle true upper cap.
+    bgUpdateFreqInput.value = (initialStoredFreqSeconds / 60).toFixed(1);
+
+
+    bgUpdateFreqInput.addEventListener('change', () => {
+        let inputMinutes = parseFloat(bgUpdateFreqInput.value);
+        const minSecondsStorage = 120; // 2 minutes in seconds
+        const maxSecondsStorage = 3600; // 1 hour in seconds (internal cap)
+        let newFrequencySecondsToStore;
+
+        if (isNaN(inputMinutes) || inputMinutes < (minSecondsStorage / 60)) { // Check against UI min equivalent
+            newFrequencySecondsToStore = 120; // Default to 120s (2 min) if input is invalid or below UI min
+        } else {
+            newFrequencySecondsToStore = Math.round(inputMinutes * 60);
+        }
+
+        // Clamp the seconds value for storage
+        if (newFrequencySecondsToStore < minSecondsStorage) {
+            newFrequencySecondsToStore = minSecondsStorage;
+        } else if (newFrequencySecondsToStore > maxSecondsStorage) {
+            newFrequencySecondsToStore = maxSecondsStorage;
+        }
+
+        // Update the input field to reflect the (potentially clamped and reconverted) value in minutes
+        bgUpdateFreqInput.value = (newFrequencySecondsToStore / 60).toFixed(1);
+
+        localStorage.setItem(OTK_BG_UPDATE_FREQ_SECONDS_KEY, newFrequencySecondsToStore.toString());
+        consoleLog(`Background update frequency saved as: ${newFrequencySecondsToStore} seconds. UI shows: ${bgUpdateFreqInput.value} min. Restarting interval.`);
+        stopBackgroundRefresh();
+        startBackgroundRefresh(); // Will now use the new value from localStorage
+    });
+
+    bgUpdateFreqGroup.appendChild(bgUpdateFreqLabel);
+    bgUpdateFreqGroup.appendChild(bgUpdateFreqInput); // Append input directly
+    generalSettingsSection.appendChild(bgUpdateFreqGroup);
+
+    // --- Debugging Toggle Option ---
+    const debugToggleGroup = document.createElement('div');
+    // Apply CSS Grid styling
+    debugToggleGroup.style.cssText = "display: grid; grid-template-columns: 165px 1fr; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
+
+    const debugToggleLabel = document.createElement('label');
+    debugToggleLabel.textContent = "Enable Console Debugging:";
+    debugToggleLabel.htmlFor = 'otk-debug-mode-checkbox';
+    // Ensure label is explicitly in grid column 1
+    debugToggleLabel.style.cssText = "min-width: 160px; text-align: right; /* margin-right: 5px; gap handles spacing */ font-size: 12px; grid-column: 1;";
+
+    const debugToggleCheckbox = document.createElement('input');
+    debugToggleCheckbox.type = 'checkbox';
+    debugToggleCheckbox.id = 'otk-debug-mode-checkbox';
+    // Checkbox styling for grid column 2 - use justify-self to align it left within its cell
+    debugToggleCheckbox.style.cssText = "height: 16px; width: 16px; grid-column: 2; justify-self: start;"; 
+    debugToggleCheckbox.checked = DEBUG_MODE;
+
+    // Wrapper is not needed with CSS Grid here
+
+    debugToggleCheckbox.addEventListener('change', () => {
+        DEBUG_MODE = debugToggleCheckbox.checked;
+        localStorage.setItem(DEBUG_MODE_KEY, DEBUG_MODE.toString());
+        consoleLog(`Debug mode ${DEBUG_MODE ? 'enabled' : 'disabled'}.`);
+        // Re-log this message with the new setting, if it's now enabled, it will show. If disabled, it won't.
+        if (DEBUG_MODE) {
+             console.log('[OTK Tracker]', `Debug mode explicitly enabled via UI.`);
+        }
+    });
+
+    debugToggleGroup.appendChild(debugToggleLabel);
+    debugToggleGroup.appendChild(debugToggleCheckbox); // Append checkbox directly
+    generalSettingsSection.appendChild(debugToggleGroup);
+
 
     // --- Theme/Appearance Section ---
+    // This section will now be added after the general settings.
+    // The 'sectionsContainer' might be redundant if themeSection is the only thing in it.
+    // Let's append themeSection directly to contentArea as well, after generalSettingsSection.
+    const sectionsContainer = document.createElement('div'); // Keep for potential future use if more sections are added here
+    contentArea.appendChild(sectionsContainer);
+
+
     const themeSection = document.createElement('div');
     themeSection.id = 'otk-options-theme-section';
     themeSection.style.cssText = `
         display: flex;
         flex-direction: column;
         gap: 10px; /* Space between color option groups */
+        max-height: 330px; /* Max height for the theme options area */
+        overflow-y: auto; /* Enable vertical scrollbar */
+        padding-right: 10px; /* Space for scrollbar */
+        padding-left: 5px; /* Minor padding for content */
     `;
     // Add a heading for the section (optional)
     const themeSectionHeading = document.createElement('h4');
-    themeSectionHeading.textContent = 'Appearance Settings';
-    themeSectionHeading.style.cssText = "margin-top: 0; margin-bottom: 10px; border-bottom: 1px solid #555; padding-bottom: 5px;";
+    themeSectionHeading.textContent = '► Theme'; // Changed text and added indicator
+    themeSectionHeading.style.cssText = `
+        margin-top: 0; 
+        margin-bottom: 10px; 
+        border-bottom: 1px solid #555; 
+        padding-bottom: 5px; 
+        cursor: pointer; 
+        user-select: none;
+    `;
     themeSection.appendChild(themeSectionHeading);
+
+    // Create a container for the actual theme options, to be toggled
+    const themeOptionsContainer = document.createElement('div');
+    themeOptionsContainer.id = 'otk-theme-options-container';
+    themeOptionsContainer.style.display = 'none'; // Hidden by default
+    // Apply scrolling properties to this container instead of themeSection directly
+    themeOptionsContainer.style.cssText += ` 
+        display: none; /* Reiterate, will be toggled */
+        flex-direction: column;
+        /* gap: 10px; Will be handled by margins/padding of new structure or individual rows */
+        max-height: 300px; /* Adjusted from themeSection's previous max-height */
+        overflow-y: auto;
+        padding-right: 10px; /* Space for scrollbar */
+        padding-left: 5px; /* Minor padding for content */
+    `;
+    themeSection.appendChild(themeOptionsContainer);
 
     sectionsContainer.appendChild(themeSection); // Add theme section to main content
 
     document.body.appendChild(optionsWindow);
 
-    // --- GUI Background Color Option --- (Now appends to themeSection)
-    const guiBgGroup = document.createElement('div');
-    guiBgGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
-
-    const guiBgLabel = document.createElement('label');
-    guiBgLabel.textContent = "GUI Background:";
-    guiBgLabel.htmlFor = 'otk-color-gui-bg-picker'; // Associate with picker
-    guiBgLabel.style.minWidth = '130px';
-    guiBgLabel.style.textAlign = 'right';
-    guiBgLabel.style.marginRight = '5px';
-
-    const guiBgHexInput = document.createElement('input');
-    guiBgHexInput.type = 'text';
-    guiBgHexInput.id = 'otk-color-gui-bg-hex';
-    guiBgHexInput.style.width = '70px';
-    guiBgHexInput.style.height = '25px';
-    guiBgHexInput.style.boxSizing = 'border-box'; /* Include padding & border in height */
-
-    const guiBgPicker = document.createElement('input');
-    guiBgPicker.type = 'color';
-    guiBgPicker.id = 'otk-color-gui-bg-picker';
-    guiBgPicker.style.width = '45px'; /* Standardize width */
-    guiBgPicker.style.height = '25px'; /* Standardize height */
-    guiBgPicker.style.padding = '0px 2px'; /* Minimal padding, some browsers add their own */
-
-    const guiBgDefaultBtn = document.createElement('button');
-    guiBgDefaultBtn.textContent = 'Default';
-    guiBgDefaultBtn.style.padding = '2px 5px';
-    guiBgDefaultBtn.style.minWidth = '60px';
-    guiBgDefaultBtn.style.height = '25px';
-
-    guiBgGroup.appendChild(guiBgLabel);
-    guiBgGroup.appendChild(guiBgHexInput);
-    guiBgGroup.appendChild(guiBgPicker);
-    guiBgGroup.appendChild(guiBgDefaultBtn);
-    themeSection.appendChild(guiBgGroup); // Changed from contentArea
-
-    // Logic for GUI Background Color
-    const initialGuiBgColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-gui-bg-color').trim();
-
-    const updateGuiBgColor = (color) => {
-        color = color.trim();
-        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
-            // Basic validation, not perfect for all hex forms but good enough for now
-            // Potentially revert to a known good color or do nothing
-            consoleWarn("Invalid hex color for GUI BG:", color);
-            return; // Or set to a default/previous valid color
+    // Event listener for toggling theme options visibility
+    themeSectionHeading.addEventListener('click', () => {
+        const isHidden = themeOptionsContainer.style.display === 'none';
+        if (isHidden) {
+            themeOptionsContainer.style.display = 'flex'; // Use 'flex' as it's a flex container
+            themeSectionHeading.textContent = '▼ Theme';
+        } else {
+            themeOptionsContainer.style.display = 'none';
+            themeSectionHeading.textContent = '► Theme';
         }
-        document.documentElement.style.setProperty('--otk-gui-bg-color', color);
-        guiBgHexInput.value = color;
-        guiBgPicker.value = color; // HTML5 color picker needs full 6-digit hex
-        saveThemeSetting('guiBgColor', color);
-    };
-
-    guiBgHexInput.addEventListener('input', (e) => updateGuiBgColor(e.target.value));
-    guiBgPicker.addEventListener('input', (e) => updateGuiBgColor(e.target.value));
-    guiBgDefaultBtn.addEventListener('click', () => {
-        document.documentElement.style.removeProperty('--otk-gui-bg-color');
-        guiBgHexInput.value = initialGuiBgColor; // Reset inputs to original default
-        guiBgPicker.value = initialGuiBgColor;
-        saveThemeSetting('guiBgColor', null); // null or undefined to signify default
     });
 
-    // Placeholder for "Reset All Colors" button (to be added later in this step or next)
-    // const resetAllButton = document.createElement('button');
-    // resetAllButton.textContent = "Reset All Colors to Default";
-    // resetAllButton.style.marginTop = "15px";
-    // contentArea.appendChild(resetAllButton);
-
-    // --- GUI Title Text Color Option ---
-    const titleTextColorGroup = document.createElement('div');
-    titleTextColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
-
-    const titleTextColorLabel = document.createElement('label');
-    titleTextColorLabel.textContent = "Title Text:";
-    titleTextColorLabel.htmlFor = 'otk-color-title-text-picker';
-    titleTextColorLabel.style.minWidth = '130px';
-    titleTextColorLabel.style.textAlign = 'right';
-    titleTextColorLabel.style.marginRight = '5px';
-
-    const titleTextColorHexInput = document.createElement('input');
-    titleTextColorHexInput.type = 'text';
-    titleTextColorHexInput.id = 'otk-color-title-text-hex';
-    titleTextColorHexInput.style.width = '70px';
-    titleTextColorHexInput.style.height = '25px';
-    titleTextColorHexInput.style.boxSizing = 'border-box';
-
-    const titleTextColorPicker = document.createElement('input');
-    titleTextColorPicker.type = 'color';
-    titleTextColorPicker.id = 'otk-color-title-text-picker';
-    titleTextColorPicker.style.width = '45px';
-    titleTextColorPicker.style.height = '25px';
-    titleTextColorPicker.style.padding = '0px 2px';
-
-    const titleTextColorDefaultBtn = document.createElement('button');
-    titleTextColorDefaultBtn.textContent = 'Default';
-    titleTextColorDefaultBtn.style.padding = '2px 5px';
-    titleTextColorDefaultBtn.style.minWidth = '60px';
-    titleTextColorDefaultBtn.style.height = '25px';
-
-    titleTextColorGroup.appendChild(titleTextColorLabel);
-    titleTextColorGroup.appendChild(titleTextColorHexInput);
-    titleTextColorGroup.appendChild(titleTextColorPicker);
-    titleTextColorGroup.appendChild(titleTextColorDefaultBtn);
-    themeSection.appendChild(titleTextColorGroup); // Changed from contentArea
-
-    // Logic for Title Text Color
-    const initialTitleTextColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-title-text-color').trim();
-
-    const updateTitleTextColor = (color) => {
-        color = color.trim();
-        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
-            consoleWarn("Invalid hex color for Title Text:", color);
-            return;
-        }
-        document.documentElement.style.setProperty('--otk-title-text-color', color);
-        titleTextColorHexInput.value = color;
-        titleTextColorPicker.value = color;
-        saveThemeSetting('titleTextColor', color);
-    };
-
-    titleTextColorHexInput.addEventListener('input', (e) => updateTitleTextColor(e.target.value));
-    titleTextColorPicker.addEventListener('input', (e) => updateTitleTextColor(e.target.value));
-    titleTextColorDefaultBtn.addEventListener('click', () => {
-        document.documentElement.style.removeProperty('--otk-title-text-color');
-        titleTextColorHexInput.value = initialTitleTextColor;
-        titleTextColorPicker.value = initialTitleTextColor;
-        saveThemeSetting('titleTextColor', null);
-    });
-
-    // --- Options Panel Text Color Option --- (Formerly GUI Stats Text)
-    const optionsTextColorGroup = document.createElement('div');
-    optionsTextColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
-
-    const optionsTextColorLabel = document.createElement('label');
-    optionsTextColorLabel.textContent = "Options Panel Text:"; // Relabeled
-    optionsTextColorLabel.htmlFor = 'otk-color-options-text-picker';
-    optionsTextColorLabel.style.minWidth = '130px';
-    optionsTextColorLabel.style.textAlign = 'right';
-    optionsTextColorLabel.style.marginRight = '5px';
-
-    const optionsTextColorHexInput = document.createElement('input');
-    optionsTextColorHexInput.type = 'text';
-    optionsTextColorHexInput.id = 'otk-color-options-text-hex'; // New ID
-    optionsTextColorHexInput.style.width = '70px';
-    optionsTextColorHexInput.style.height = '25px';
-    optionsTextColorHexInput.style.boxSizing = 'border-box';
-
-    const optionsTextColorPicker = document.createElement('input');
-    optionsTextColorPicker.type = 'color';
-    optionsTextColorPicker.id = 'otk-color-options-text-picker'; // New ID
-    optionsTextColorPicker.style.width = '45px';
-    optionsTextColorPicker.style.height = '25px';
-    optionsTextColorPicker.style.padding = '0px 2px';
-
-    const optionsTextColorDefaultBtn = document.createElement('button');
-    optionsTextColorDefaultBtn.textContent = 'Default';
-    optionsTextColorDefaultBtn.style.padding = '2px 5px';
-    optionsTextColorDefaultBtn.style.minWidth = '60px';
-    optionsTextColorDefaultBtn.style.height = '25px';
-
-    optionsTextColorGroup.appendChild(optionsTextColorLabel);
-    optionsTextColorGroup.appendChild(optionsTextColorHexInput);
-    optionsTextColorGroup.appendChild(optionsTextColorPicker);
-    optionsTextColorGroup.appendChild(optionsTextColorDefaultBtn);
-    themeSection.appendChild(optionsTextColorGroup); // Changed from contentArea
-
-    // Logic for Options Panel Text Color (uses --otk-options-text-color)
-    const initialOptionsTextColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-options-text-color').trim();
-
-    const updateOptionsTextColor = (color) => {
-        color = color.trim();
-        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
-            consoleWarn("Invalid hex color for Options Panel Text:", color);
-            return;
-        }
-        document.documentElement.style.setProperty('--otk-options-text-color', color); // Updated variable
-        optionsTextColorHexInput.value = color;
-        optionsTextColorPicker.value = color;
-        saveThemeSetting('optionsTextColor', color); // Updated Key for localStorage
-    };
-
-    optionsTextColorHexInput.addEventListener('input', (e) => updateOptionsTextColor(e.target.value));
-    optionsTextColorPicker.addEventListener('input', (e) => updateOptionsTextColor(e.target.value));
-    optionsTextColorDefaultBtn.addEventListener('click', () => {
-        document.documentElement.style.removeProperty('--otk-options-text-color'); // Updated variable
-        optionsTextColorHexInput.value = initialOptionsTextColor;
-        optionsTextColorPicker.value = initialOptionsTextColor;
-        saveThemeSetting('optionsTextColor', null); // Updated key
-    });
-
-    // --- Actual Stats Text Color Option ---
-    const actualStatsTextColorGroup = document.createElement('div');
-    actualStatsTextColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
-
-    const actualStatsTextColorLabel = document.createElement('label');
-    actualStatsTextColorLabel.textContent = "Stats Text (Actual):";
-    actualStatsTextColorLabel.htmlFor = 'otk-color-actual-stats-text-picker';
-    actualStatsTextColorLabel.style.minWidth = '130px';
-    actualStatsTextColorLabel.style.textAlign = 'right';
-    actualStatsTextColorLabel.style.marginRight = '5px';
-
-    const actualStatsTextColorHexInput = document.createElement('input');
-    actualStatsTextColorHexInput.type = 'text';
-    actualStatsTextColorHexInput.id = 'otk-color-actual-stats-text-hex';
-    actualStatsTextColorHexInput.style.width = '70px';
-    actualStatsTextColorHexInput.style.height = '25px';
-    actualStatsTextColorHexInput.style.boxSizing = 'border-box';
-
-    const actualStatsTextColorPicker = document.createElement('input');
-    actualStatsTextColorPicker.type = 'color';
-    actualStatsTextColorPicker.id = 'otk-color-actual-stats-text-picker';
-    actualStatsTextColorPicker.style.width = '45px';
-    actualStatsTextColorPicker.style.height = '25px';
-    actualStatsTextColorPicker.style.padding = '0px 2px';
-
-    const actualStatsTextColorDefaultBtn = document.createElement('button');
-    actualStatsTextColorDefaultBtn.textContent = 'Default';
-    actualStatsTextColorDefaultBtn.style.padding = '2px 5px';
-    actualStatsTextColorDefaultBtn.style.minWidth = '60px';
-    actualStatsTextColorDefaultBtn.style.height = '25px';
-
-    actualStatsTextColorGroup.appendChild(actualStatsTextColorLabel);
-    actualStatsTextColorGroup.appendChild(actualStatsTextColorHexInput);
-    actualStatsTextColorGroup.appendChild(actualStatsTextColorPicker);
-    actualStatsTextColorGroup.appendChild(actualStatsTextColorDefaultBtn);
-    themeSection.appendChild(actualStatsTextColorGroup); // Changed from contentArea
-
-    // Logic for Actual Stats Text Color (uses --otk-stats-text-color)
-    const initialActualStatsTextColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-stats-text-color').trim();
-
-    const updateActualStatsTextColor = (color) => {
-        color = color.trim();
-        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
-            consoleWarn("Invalid hex color for Actual Stats Text:", color);
-            return;
-        }
-        document.documentElement.style.setProperty('--otk-stats-text-color', color);
-        actualStatsTextColorHexInput.value = color;
-        actualStatsTextColorPicker.value = color;
-        saveThemeSetting('actualStatsTextColor', color);
-    };
-
-    actualStatsTextColorHexInput.addEventListener('input', (e) => updateActualStatsTextColor(e.target.value));
-    actualStatsTextColorPicker.addEventListener('input', (e) => updateActualStatsTextColor(e.target.value));
-    actualStatsTextColorDefaultBtn.addEventListener('click', () => {
-        document.documentElement.style.removeProperty('--otk-stats-text-color');
-        actualStatsTextColorHexInput.value = initialActualStatsTextColor;
-        actualStatsTextColorPicker.value = initialActualStatsTextColor;
-        saveThemeSetting('actualStatsTextColor', null);
-    });
-
-    // --- Viewer Background Color Option ---
-    const viewerBgGroup = document.createElement('div');
-    viewerBgGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
-
-    const viewerBgLabel = document.createElement('label');
-    viewerBgLabel.textContent = "Viewer Background:";
-    viewerBgLabel.htmlFor = 'otk-color-viewer-bg-picker';
-    viewerBgLabel.style.minWidth = '130px';
-    viewerBgLabel.style.textAlign = 'right';
-    viewerBgLabel.style.marginRight = '5px';
-
-    const viewerBgHexInput = document.createElement('input');
-    viewerBgHexInput.type = 'text';
-    viewerBgHexInput.id = 'otk-color-viewer-bg-hex';
-    viewerBgHexInput.style.width = '70px';
-    viewerBgHexInput.style.height = '25px';
-    viewerBgHexInput.style.boxSizing = 'border-box';
-
-    const viewerBgPicker = document.createElement('input');
-    viewerBgPicker.type = 'color';
-    viewerBgPicker.id = 'otk-color-viewer-bg-picker';
-    viewerBgPicker.style.width = '45px';
-    viewerBgPicker.style.height = '25px';
-    viewerBgPicker.style.padding = '0px 2px';
-
-    const viewerBgDefaultBtn = document.createElement('button');
-    viewerBgDefaultBtn.textContent = 'Default';
-    viewerBgDefaultBtn.style.padding = '2px 5px';
-    viewerBgDefaultBtn.style.minWidth = '60px';
-    viewerBgDefaultBtn.style.height = '25px';
-
-    viewerBgGroup.appendChild(viewerBgLabel);
-    viewerBgGroup.appendChild(viewerBgHexInput);
-    viewerBgGroup.appendChild(viewerBgPicker);
-    viewerBgGroup.appendChild(viewerBgDefaultBtn);
-    themeSection.appendChild(viewerBgGroup); // Changed from contentArea
-
-    // Logic for Viewer Background Color
-    const initialViewerBgColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-viewer-bg-color').trim();
-
-    const updateViewerBgColor = (color) => {
-        color = color.trim();
-        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
-            consoleWarn("Invalid hex color for Viewer BG:", color);
-            return;
-        }
-        document.documentElement.style.setProperty('--otk-viewer-bg-color', color);
-        viewerBgHexInput.value = color;
-        viewerBgPicker.value = color;
-        saveThemeSetting('viewerBgColor', color);
-    };
-
-    viewerBgHexInput.addEventListener('input', (e) => updateViewerBgColor(e.target.value));
-    viewerBgPicker.addEventListener('input', (e) => updateViewerBgColor(e.target.value));
-    viewerBgDefaultBtn.addEventListener('click', () => {
-        document.documentElement.style.removeProperty('--otk-viewer-bg-color');
-        viewerBgHexInput.value = initialViewerBgColor;
-        viewerBgPicker.value = initialViewerBgColor;
-        saveThemeSetting('viewerBgColor', null);
-    });
-
-    // --- Thread List Titles Color Option ---
-    const threadListTitleColorGroup = document.createElement('div');
-    threadListTitleColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
-
-    const threadListTitleColorLabel = document.createElement('label');
-    threadListTitleColorLabel.textContent = "Thread List Titles:";
-    threadListTitleColorLabel.htmlFor = 'otk-color-threadlist-title-picker';
-    threadListTitleColorLabel.style.minWidth = '130px';
-    threadListTitleColorLabel.style.textAlign = 'right';
-    threadListTitleColorLabel.style.marginRight = '5px';
-
-    const threadListTitleColorHexInput = document.createElement('input');
-    threadListTitleColorHexInput.type = 'text';
-    threadListTitleColorHexInput.id = 'otk-color-threadlist-title-hex';
-    threadListTitleColorHexInput.style.width = '70px';
-    threadListTitleColorHexInput.style.height = '25px';
-    threadListTitleColorHexInput.style.boxSizing = 'border-box';
-
-    const threadListTitleColorPicker = document.createElement('input');
-    threadListTitleColorPicker.type = 'color';
-    threadListTitleColorPicker.id = 'otk-color-threadlist-title-picker';
-    threadListTitleColorPicker.style.width = '45px';
-    threadListTitleColorPicker.style.height = '25px';
-    threadListTitleColorPicker.style.padding = '0px 2px';
-
-    const threadListTitleColorDefaultBtn = document.createElement('button');
-    threadListTitleColorDefaultBtn.textContent = 'Default';
-    threadListTitleColorDefaultBtn.style.padding = '2px 5px';
-    threadListTitleColorDefaultBtn.style.minWidth = '60px';
-    threadListTitleColorDefaultBtn.style.height = '25px';
-
-    threadListTitleColorGroup.appendChild(threadListTitleColorLabel);
-    threadListTitleColorGroup.appendChild(threadListTitleColorHexInput);
-    threadListTitleColorGroup.appendChild(threadListTitleColorPicker);
-    threadListTitleColorGroup.appendChild(threadListTitleColorDefaultBtn);
-    contentArea.appendChild(threadListTitleColorGroup);
-
-    // Logic for Thread List Titles Color
-    const initialThreadListTitleColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-gui-threadlist-title-color').trim();
-
-    const updateThreadListTitleColor = (color) => {
-        color = color.trim();
-        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
-            consoleWarn("Invalid hex color for Thread List Titles:", color);
-            return;
-        }
-        document.documentElement.style.setProperty('--otk-gui-threadlist-title-color', color);
-        threadListTitleColorHexInput.value = color;
-        threadListTitleColorPicker.value = color;
-        saveThemeSetting('guiThreadListTitleColor', color);
-    };
-
-    threadListTitleColorHexInput.addEventListener('input', (e) => updateThreadListTitleColor(e.target.value));
-    threadListTitleColorPicker.addEventListener('input', (e) => updateThreadListTitleColor(e.target.value));
-    threadListTitleColorDefaultBtn.addEventListener('click', () => {
-        document.documentElement.style.removeProperty('--otk-gui-threadlist-title-color');
-        threadListTitleColorHexInput.value = initialThreadListTitleColor;
-        threadListTitleColorPicker.value = initialThreadListTitleColor;
-        saveThemeSetting('guiThreadListTitleColor', null);
-    });
-
-    // --- Thread List Timestamps Color Option ---
-    const threadListTimeColorGroup = document.createElement('div');
-    threadListTimeColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
-
-    const threadListTimeColorLabel = document.createElement('label');
-    threadListTimeColorLabel.textContent = "Thread List Times:";
-    threadListTimeColorLabel.htmlFor = 'otk-color-threadlist-time-picker';
-    threadListTimeColorLabel.style.minWidth = '130px';
-    threadListTimeColorLabel.style.textAlign = 'right';
-    threadListTimeColorLabel.style.marginRight = '5px';
-
-    const threadListTimeColorHexInput = document.createElement('input');
-    threadListTimeColorHexInput.type = 'text';
-    threadListTimeColorHexInput.id = 'otk-color-threadlist-time-hex';
-    threadListTimeColorHexInput.style.width = '70px';
-    threadListTimeColorHexInput.style.height = '25px';
-    threadListTimeColorHexInput.style.boxSizing = 'border-box';
-
-    const threadListTimeColorPicker = document.createElement('input');
-    threadListTimeColorPicker.type = 'color';
-    threadListTimeColorPicker.id = 'otk-color-threadlist-time-picker';
-    threadListTimeColorPicker.style.width = '45px';
-    threadListTimeColorPicker.style.height = '25px';
-    threadListTimeColorPicker.style.padding = '0px 2px';
-
-    const threadListTimeColorDefaultBtn = document.createElement('button');
-    threadListTimeColorDefaultBtn.textContent = 'Default';
-    threadListTimeColorDefaultBtn.style.padding = '2px 5px';
-    threadListTimeColorDefaultBtn.style.minWidth = '60px';
-    threadListTimeColorDefaultBtn.style.height = '25px';
-
-    threadListTimeColorGroup.appendChild(threadListTimeColorLabel);
-    threadListTimeColorGroup.appendChild(threadListTimeColorHexInput);
-    threadListTimeColorGroup.appendChild(threadListTimeColorPicker);
-    threadListTimeColorGroup.appendChild(threadListTimeColorDefaultBtn);
-    contentArea.appendChild(threadListTimeColorGroup);
-
-    // Logic for Thread List Timestamps Color
-    const initialThreadListTimeColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-gui-threadlist-time-color').trim();
-
-    const updateThreadListTimeColor = (color) => {
-        color = color.trim();
-        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) {
-            consoleWarn("Invalid hex color for Thread List Times:", color);
-            return;
-        }
-        document.documentElement.style.setProperty('--otk-gui-threadlist-time-color', color);
-        threadListTimeColorHexInput.value = color;
-        threadListTimeColorPicker.value = color;
-        saveThemeSetting('guiThreadListTimeColor', color);
-    };
-
-    threadListTimeColorHexInput.addEventListener('input', (e) => updateThreadListTimeColor(e.target.value));
-    threadListTimeColorPicker.addEventListener('input', (e) => updateThreadListTimeColor(e.target.value));
-    threadListTimeColorDefaultBtn.addEventListener('click', () => {
-        document.documentElement.style.removeProperty('--otk-gui-threadlist-time-color');
-        threadListTimeColorHexInput.value = initialThreadListTimeColor;
-        threadListTimeColorPicker.value = initialThreadListTimeColor;
-        saveThemeSetting('guiThreadListTimeColor', null);
-    });
-
-    // --- Viewer Header Border Color Option ---
-    const viewerHeaderBorderColorGroup = document.createElement('div');
-    viewerHeaderBorderColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
-    const viewerHeaderBorderColorLabel = document.createElement('label');
-    viewerHeaderBorderColorLabel.textContent = "Viewer Header Border:";
-    viewerHeaderBorderColorLabel.htmlFor = 'otk-color-viewer-header-border-picker';
-    viewerHeaderBorderColorLabel.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
-    const viewerHeaderBorderColorHexInput = document.createElement('input');
-    viewerHeaderBorderColorHexInput.type = 'text';
-    viewerHeaderBorderColorHexInput.id = 'otk-color-viewer-header-border-hex';
-    viewerHeaderBorderColorHexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
-    const viewerHeaderBorderColorPicker = document.createElement('input');
-    viewerHeaderBorderColorPicker.type = 'color';
-    viewerHeaderBorderColorPicker.id = 'otk-color-viewer-header-border-picker';
-    viewerHeaderBorderColorPicker.style.cssText = "width: 45px; height: 25px; padding: 0px 2px;";
-    const viewerHeaderBorderColorDefaultBtn = document.createElement('button');
-    viewerHeaderBorderColorDefaultBtn.textContent = 'Default';
-    viewerHeaderBorderColorDefaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
-    viewerHeaderBorderColorGroup.append(viewerHeaderBorderColorLabel, viewerHeaderBorderColorHexInput, viewerHeaderBorderColorPicker, viewerHeaderBorderColorDefaultBtn);
-    contentArea.appendChild(viewerHeaderBorderColorGroup);
-    const initialViewerHeaderBorderColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-viewer-header-border-color').trim();
-    const updateViewerHeaderBorderColor = (color) => {
-        color = color.trim();
-        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) return;
-        document.documentElement.style.setProperty('--otk-viewer-header-border-color', color);
-        viewerHeaderBorderColorHexInput.value = color;
-        viewerHeaderBorderColorPicker.value = color;
-        saveThemeSetting('viewerHeaderBorderColor', color);
-    };
-    viewerHeaderBorderColorHexInput.addEventListener('input', (e) => updateViewerHeaderBorderColor(e.target.value));
-    viewerHeaderBorderColorPicker.addEventListener('input', (e) => updateViewerHeaderBorderColor(e.target.value));
-    viewerHeaderBorderColorDefaultBtn.addEventListener('click', () => {
-        document.documentElement.style.removeProperty('--otk-viewer-header-border-color');
-        viewerHeaderBorderColorHexInput.value = initialViewerHeaderBorderColor;
-        viewerHeaderBorderColorPicker.value = initialViewerHeaderBorderColor;
-        saveThemeSetting('viewerHeaderBorderColor', null);
-    });
-
-    // --- Viewer Quote L1 Border Color Option ---
-    const viewerQuote1BorderColorGroup = document.createElement('div');
-    viewerQuote1BorderColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
-    const viewerQuote1BorderColorLabel = document.createElement('label');
-    viewerQuote1BorderColorLabel.textContent = "Quote L1 Header Border:";
-    viewerQuote1BorderColorLabel.htmlFor = 'otk-color-viewer-quote1-border-picker';
-    viewerQuote1BorderColorLabel.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
-    const viewerQuote1BorderColorHexInput = document.createElement('input');
-    viewerQuote1BorderColorHexInput.type = 'text';
-    viewerQuote1BorderColorHexInput.id = 'otk-color-viewer-quote1-border-hex';
-    viewerQuote1BorderColorHexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
-    const viewerQuote1BorderColorPicker = document.createElement('input');
-    viewerQuote1BorderColorPicker.type = 'color';
-    viewerQuote1BorderColorPicker.id = 'otk-color-viewer-quote1-border-picker';
-    viewerQuote1BorderColorPicker.style.cssText = "width: 45px; height: 25px; padding: 0px 2px;";
-    const viewerQuote1BorderColorDefaultBtn = document.createElement('button');
-    viewerQuote1BorderColorDefaultBtn.textContent = 'Default';
-    viewerQuote1BorderColorDefaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
-    viewerQuote1BorderColorGroup.append(viewerQuote1BorderColorLabel, viewerQuote1BorderColorHexInput, viewerQuote1BorderColorPicker, viewerQuote1BorderColorDefaultBtn);
-    contentArea.appendChild(viewerQuote1BorderColorGroup);
-    const initialViewerQuote1BorderColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-viewer-quote1-header-border-color').trim();
-    const updateViewerQuote1BorderColor = (color) => {
-        color = color.trim();
-        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) return;
-        document.documentElement.style.setProperty('--otk-viewer-quote1-header-border-color', color);
-        viewerQuote1BorderColorHexInput.value = color;
-        viewerQuote1BorderColorPicker.value = color;
-        saveThemeSetting('viewerQuote1HeaderBorderColor', color);
-    };
-    viewerQuote1BorderColorHexInput.addEventListener('input', (e) => updateViewerQuote1BorderColor(e.target.value));
-    viewerQuote1BorderColorPicker.addEventListener('input', (e) => updateViewerQuote1BorderColor(e.target.value));
-    viewerQuote1BorderColorDefaultBtn.addEventListener('click', () => {
-        document.documentElement.style.removeProperty('--otk-viewer-quote1-header-border-color');
-        viewerQuote1BorderColorHexInput.value = initialViewerQuote1BorderColor;
-        viewerQuote1BorderColorPicker.value = initialViewerQuote1BorderColor;
-        saveThemeSetting('viewerQuote1HeaderBorderColor', null);
-    });
-
-    // --- Message Background Colors ---
-    ['Depth 0', 'Depth 1', 'Depth 2+'].forEach((label, index) => {
-        const key = `msgDepth${index === 2 ? '2plus' : index}BgColor`;
-        const cssVar = `--otk-msg-depth${index === 2 ? '2plus' : index}-bg-color`;
-        const idSuffix = `msg-depth${index === 2 ? '2plus' : index}-bg`; // Used for IDs
-
+    // Helper function to create a theme option row
+    function createThemeOptionRow(options) {
+        // options = { labelText, storageKey, cssVariable, defaultValue, inputType ('color'|'number'), unit ('px'|null), min, max, idSuffix }
         const group = document.createElement('div');
-        group.style.cssText = "display: flex; align-items: center; gap: 8px;";
-        const lbl = document.createElement('label');
-        lbl.textContent = `Msg BG (${label}):`;
-        lbl.htmlFor = `otk-color-${idSuffix}-picker`;
-        lbl.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
-        const hexInput = document.createElement('input');
-        hexInput.type = 'text';
-        hexInput.id = `otk-color-${idSuffix}-hex`;
-        hexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
-        const picker = document.createElement('input');
-        picker.type = 'color';
-        picker.id = `otk-color-${idSuffix}-picker`;
-        picker.style.cssText = "width: 45px; height: 25px; padding: 0px 2px;";
+        group.style.cssText = "display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
+
+        const label = document.createElement('label');
+        label.textContent = options.labelText;
+        // The ID for the picker/input will be 'otk-' + options.idSuffix
+        label.htmlFor = `otk-${options.idSuffix}`;
+        label.style.cssText = "min-width: 160px; text-align: right; margin-right: 5px; font-size: 12px; flex-shrink: 0;"; // Increased min-width for longer labels
+
+        let hexInput = null;
+        if (options.inputType === 'color') {
+            hexInput = document.createElement('input');
+            hexInput.type = 'text';
+            hexInput.id = `otk-${options.idSuffix}-hex`;
+            hexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box; font-size: 12px;";
+        }
+
+        const mainInput = document.createElement('input');
+        mainInput.type = options.inputType;
+        mainInput.id = `otk-${options.idSuffix}`; // Main input gets the direct ID for the label
+        if (options.inputType === 'color') {
+            mainInput.style.cssText = "width: 45px; height: 25px; padding: 0px 2px; box-sizing: border-box;";
+        } else if (options.inputType === 'number') {
+            mainInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box; font-size: 12px;";
+            if (options.min !== undefined) mainInput.min = options.min;
+            if (options.max !== undefined) mainInput.max = options.max;
+        }
+
         const defaultBtn = document.createElement('button');
         defaultBtn.textContent = 'Default';
-        defaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
+        defaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px; font-size: 11px;";
 
-        group.append(lbl, hexInput, picker, defaultBtn);
-        themeSection.appendChild(group); // Changed from contentArea
+        group.appendChild(label);
+        if (hexInput) group.appendChild(hexInput);
+        group.appendChild(mainInput);
+        group.appendChild(defaultBtn);
 
-        const initialColor = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
-        const updateColor = (color) => {
-            color = color.trim();
-            if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) return;
-            document.documentElement.style.setProperty(cssVar, color);
-            hexInput.value = color;
-            picker.value = color;
-            saveThemeSetting(key, color);
+        // Determine initial value for inputs
+        let initialValue = getComputedStyle(document.documentElement).getPropertyValue(options.cssVariable)?.trim() || options.defaultValue;
+        if (options.unit && initialValue.endsWith(options.unit)) {
+            initialValue = initialValue.replace(options.unit, '');
+        }
+
+        if (options.inputType === 'color') {
+            if (hexInput) hexInput.value = initialValue;
+            mainInput.value = initialValue; // Color picker also needs full hex
+        } else if (options.inputType === 'number') {
+            mainInput.value = initialValue;
+        }
+
+        // Event handling
+        const updateSetting = (value) => {
+            let processedValue = value.trim();
+            if (options.inputType === 'color') {
+                if (!/^#[0-9A-F]{6}$/i.test(processedValue) && !/^#[0-9A-F]{3}$/i.test(processedValue)) {
+                    consoleWarn(`Invalid hex color for ${options.labelText}:`, processedValue);
+                    // Restore previous valid values if possible, or default
+                    const currentSaved = (JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {})[options.storageKey] || options.defaultValue;
+                    if (hexInput) hexInput.value = currentSaved;
+                    mainInput.value = currentSaved;
+                    return;
+                }
+                if (hexInput) hexInput.value = processedValue;
+                mainInput.value = processedValue; // Color picker
+            } else if (options.inputType === 'number') {
+                const numValue = parseInt(processedValue, 10);
+                if (isNaN(numValue) || (options.min !== undefined && numValue < options.min) || (options.max !== undefined && numValue > options.max)) {
+                    consoleWarn(`Invalid number value for ${options.labelText}:`, processedValue);
+                     const currentSaved = (JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {})[options.storageKey] || options.defaultValue;
+                    mainInput.value = currentSaved.replace(options.unit || '', '');
+                    return;
+                }
+                mainInput.value = numValue; // Update input with validated number
+                processedValue = numValue + (options.unit || '');
+            }
+
+            if (options.storageKey === 'viewerQuote1HeaderBorderColor' || options.storageKey === 'viewerQuote2plusHeaderBorderColor') {
+                consoleLog(`[Debug UpdateSetting] Applying to ${options.cssVariable}: ${processedValue} (StorageKey: ${options.storageKey})`);
+            }
+
+            document.documentElement.style.setProperty(options.cssVariable, processedValue);
+            saveThemeSetting(options.storageKey, processedValue);
+            // If this is the cog icon color, update it directly as it's not part of applyThemeSettings' normal flow for self-update
+            if (options.storageKey === 'cogIconColor') {
+                 const cogIcon = document.getElementById('otk-settings-cog');
+                 if(cogIcon) cogIcon.style.color = processedValue;
+            }
         };
-        hexInput.addEventListener('input', (e) => updateColor(e.target.value));
-        picker.addEventListener('input', (e) => updateColor(e.target.value));
+
+        if (hexInput) { // For color inputs, hex field drives mainInput for validation convenience
+            hexInput.addEventListener('input', (e) => updateSetting(e.target.value));
+            mainInput.addEventListener('input', (e) => { // Color picker change also updates hex
+                hexInput.value = e.target.value;
+                updateSetting(e.target.value);
+            });
+        } else { // For number inputs
+            mainInput.addEventListener('change', (e) => updateSetting(e.target.value));
+        }
+
         defaultBtn.addEventListener('click', () => {
-            document.documentElement.style.removeProperty(cssVar);
-            hexInput.value = initialColor;
-            picker.value = initialColor;
-            saveThemeSetting(key, null);
+            document.documentElement.style.removeProperty(options.cssVariable); // Reverts to CSS default
+            let cssDefaultValue = getComputedStyle(document.documentElement).getPropertyValue(options.cssVariable)?.trim() || options.defaultValue;
+
+            if (options.unit && cssDefaultValue.endsWith(options.unit)) {
+                cssDefaultValue = cssDefaultValue.replace(options.unit, '');
+            }
+            if (options.inputType === 'color') {
+                if (hexInput) hexInput.value = cssDefaultValue;
+                mainInput.value = cssDefaultValue;
+            } else {
+                mainInput.value = cssDefaultValue;
+            }
+            saveThemeSetting(options.storageKey, null); // Save null to signify using default
+            // If this is the cog icon color, update it directly
+            if (options.storageKey === 'cogIconColor') {
+                 const cogIcon = document.getElementById('otk-settings-cog');
+                 if(cogIcon) cogIcon.style.color = ''; // Clear inline style to use CSS var
+            }
         });
-    });
+        // Initial application from saved settings (if any) is handled by applyThemeSettings call later.
+        // This function just sets up the row and its default state based on current CSS or fallback.
+        return group;
+    }
 
-    // --- Message Body Text Colors ---
-    ['Depth 0', 'Depth 1', 'Depth 2+'].forEach((label, index) => {
-        const key = `msgDepth${index === 2 ? '2plus' : index}TextColor`;
-        const cssVar = `--otk-msg-depth${index === 2 ? '2plus' : index}-text-color`;
-        const idSuffix = `msg-depth${index === 2 ? '2plus' : index}-text`; // Used for IDs
+    function createDivider() {
+        const hr = document.createElement('hr');
+        hr.style.cssText = "width: 98%; border: none; border-top: 1px solid #555; margin: 12px auto 8px auto;";
+        return hr;
+    }
 
-        const group = document.createElement('div');
-        group.style.cssText = "display: flex; align-items: center; gap: 8px;";
-        const lbl = document.createElement('label');
-        lbl.textContent = `Msg Text (${label}):`;
-        lbl.htmlFor = `otk-color-${idSuffix}-picker`;
-        lbl.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
-        const hexInput = document.createElement('input');
-        hexInput.type = 'text';
-        hexInput.id = `otk-color-${idSuffix}-hex`;
-        hexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
-        const picker = document.createElement('input');
-        picker.type = 'color';
-        picker.id = `otk-color-${idSuffix}-picker`;
-        picker.style.cssText = "width: 45px; height: 25px; padding: 0px 2px;";
-        const defaultBtn = document.createElement('button');
-        defaultBtn.textContent = 'Default';
-        defaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
+    function createSectionHeading(text) {
+        const h = document.createElement('h5');
+        h.textContent = text;
+        h.style.cssText = "margin-top: 8px; margin-bottom: 8px; color: # ઓફ ઓફ ઓફ; font-size: 13px; border-bottom: 1px solid #444; padding-bottom: 4px; font-weight: bold;";
+        return h;
+    }
 
-        group.append(lbl, hexInput, picker, defaultBtn);
-        themeSection.appendChild(group); // Changed from contentArea
+    // Clear existing content from themeOptionsContainer before repopulating
+    themeOptionsContainer.innerHTML = '';
 
-        const initialColor = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
-        const updateColor = (color) => {
-            color = color.trim();
-            if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) return;
-            document.documentElement.style.setProperty(cssVar, color);
-            hexInput.value = color;
-            picker.value = color;
-            saveThemeSetting(key, color);
-        };
-        hexInput.addEventListener('input', (e) => updateColor(e.target.value));
-        picker.addEventListener('input', (e) => updateColor(e.target.value));
-        defaultBtn.addEventListener('click', () => {
-            document.documentElement.style.removeProperty(cssVar);
-            hexInput.value = initialColor;
-            picker.value = initialColor;
-            saveThemeSetting(key, null);
-        });
-    });
+    // --- GUI Section ---
+    themeOptionsContainer.appendChild(createSectionHeading('GUI'));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background:", storageKey: 'guiBgColor', cssVariable: '--otk-gui-bg-color', defaultValue: '#181818', inputType: 'color', idSuffix: 'gui-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Title Font:", storageKey: 'titleTextColor', cssVariable: '--otk-title-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'title-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Titles Font:", storageKey: 'guiThreadListTitleColor', cssVariable: '--otk-gui-threadlist-title-color', defaultValue: '#e0e0e0', inputType: 'color', idSuffix: 'threadlist-title' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Times Font:", storageKey: 'guiThreadListTimeColor', cssVariable: '--otk-gui-threadlist-time-color', defaultValue: '#aaa', inputType: 'color', idSuffix: 'threadlist-time' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Stats Font:", storageKey: 'actualStatsTextColor', cssVariable: '--otk-stats-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'actual-stats-text' }));
+    themeOptionsContainer.appendChild(createDivider());
 
-    // --- Message Header Text Colors ---
-    ['Depth 0', 'Depth 1', 'Depth 2+'].forEach((label, index) => {
-        const key = `msgDepth${index === 2 ? '2plus' : index}HeaderTextColor`;
-        const cssVar = `--otk-msg-depth${index === 2 ? '2plus' : index}-header-text-color`;
-        const idSuffix = `msg-depth${index === 2 ? '2plus' : index}-header-text`;
+    // --- Viewer Section ---
+    themeOptionsContainer.appendChild(createSectionHeading('Viewer'));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background:", storageKey: 'viewerBgColor', cssVariable: '--otk-viewer-bg-color', defaultValue: '#181818', inputType: 'color', idSuffix: 'viewer-bg' }));
+    // Assuming "Header Divider" refers to the GUI's bottom border as discussed.
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "GUI Bottom Border:", storageKey: 'guiBottomBorderColor', cssVariable: '--otk-gui-bottom-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'gui-bottom-border' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Msgs Divider:", storageKey: 'newMessagesDividerColor', cssVariable: '--otk-new-messages-divider-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-divider' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Msgs Font:", storageKey: 'newMessagesFontColor', cssVariable: '--otk-new-messages-font-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-font' }));
+    themeOptionsContainer.appendChild(createDivider());
 
-        const group = document.createElement('div');
-        group.style.cssText = "display: flex; align-items: center; gap: 8px;";
-        const lbl = document.createElement('label');
-        lbl.textContent = `Msg Header (${label}):`;
-        lbl.htmlFor = `otk-color-${idSuffix}-picker`;
-        lbl.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
-        const hexInput = document.createElement('input');
-        hexInput.type = 'text';
-        hexInput.id = `otk-color-${idSuffix}-hex`;
-        hexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
-        const picker = document.createElement('input');
-        picker.type = 'color';
-        picker.id = `otk-color-${idSuffix}-picker`;
-        picker.style.cssText = "width: 45px; height: 25px; padding: 0px 2px;";
-        const defaultBtn = document.createElement('button');
-        defaultBtn.textContent = 'Default';
-        defaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
+    // --- Messages Section ---
+    themeOptionsContainer.appendChild(createSectionHeading('Messages'));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Font Size (px):", storageKey: 'viewerMessageFontSize', cssVariable: '--otk-viewer-message-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'fontsize-message-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Background:", storageKey: 'msgDepth0BgColor', cssVariable: '--otk-msg-depth0-bg-color', defaultValue: '#343434', inputType: 'color', idSuffix: 'msg-depth0-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Font:", storageKey: 'msgDepth0TextColor', cssVariable: '--otk-msg-depth0-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Header Font:", storageKey: 'msgDepth0HeaderTextColor', cssVariable: '--otk-msg-depth0-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-header-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Header Underline:", storageKey: 'viewerHeaderBorderColor', cssVariable: '--otk-viewer-header-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'viewer-header-border' }));
 
-        group.append(lbl, hexInput, picker, defaultBtn);
-        themeSection.appendChild(group); // Changed from contentArea
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Background:", storageKey: 'msgDepth1BgColor', cssVariable: '--otk-msg-depth1-bg-color', defaultValue: '#525252', inputType: 'color', idSuffix: 'msg-depth1-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Font:", storageKey: 'msgDepth1TextColor', cssVariable: '--otk-msg-depth1-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Header Font:", storageKey: 'msgDepth1HeaderTextColor', cssVariable: '--otk-msg-depth1-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-header-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Header Underline:", storageKey: 'viewerQuote1HeaderBorderColor', cssVariable: '--otk-viewer-quote1-header-border-color', defaultValue: '#343434', inputType: 'color', idSuffix: 'viewer-quote1-border' }));
 
-        const initialColor = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
-        const updateColor = (color) => {
-            color = color.trim();
-            if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) return;
-            document.documentElement.style.setProperty(cssVar, color);
-            hexInput.value = color;
-            picker.value = color;
-            saveThemeSetting(key, color);
-        };
-        hexInput.addEventListener('input', (e) => updateColor(e.target.value));
-        picker.addEventListener('input', (e) => updateColor(e.target.value));
-        defaultBtn.addEventListener('click', () => {
-            document.documentElement.style.removeProperty(cssVar);
-            hexInput.value = initialColor;
-            picker.value = initialColor;
-            saveThemeSetting(key, null);
-        });
-    });
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Background:", storageKey: 'msgDepth2plusBgColor', cssVariable: '--otk-msg-depth2plus-bg-color', defaultValue: '#484848', inputType: 'color', idSuffix: 'msg-depth2plus-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Font:", storageKey: 'msgDepth2plusTextColor', cssVariable: '--otk-msg-depth2plus-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Header Font:", storageKey: 'msgDepth2plusHeaderTextColor', cssVariable: '--otk-msg-depth2plus-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-header-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Header Underline:", storageKey: 'viewerQuote2plusHeaderBorderColor', cssVariable: '--otk-viewer-quote2plus-header-border-color', defaultValue: '#2a2a2a', inputType: 'color', idSuffix: 'viewer-quote2plus-border' })); // New option
+    themeOptionsContainer.appendChild(createDivider());
 
-    // --- Viewer Message Font Size Option ---
-    const msgFontSizeGroup = document.createElement('div');
-    msgFontSizeGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
+    // --- Options Section ---
+    themeOptionsContainer.appendChild(createSectionHeading('Options Panel'));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Cog Icon Color:", storageKey: 'cogIconColor', cssVariable: '--otk-cog-icon-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'cog-icon' })); // New option
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Panel Font:", storageKey: 'optionsTextColor', cssVariable: '--otk-options-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'options-text' }));
 
-    const msgFontSizeLabel = document.createElement('label');
-    msgFontSizeLabel.textContent = "Message Font Size (px):";
-    msgFontSizeLabel.htmlFor = 'otk-fontsize-message-text';
-    msgFontSizeLabel.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
+    // --- Custom Themes Section ---
+    themeOptionsContainer.appendChild(createDivider());
+    themeOptionsContainer.appendChild(createSectionHeading('Custom Themes'));
 
-    const msgFontSizeInput = document.createElement('input');
-    msgFontSizeInput.type = 'number';
-    msgFontSizeInput.id = 'otk-fontsize-message-text';
-    msgFontSizeInput.min = '8';
-    msgFontSizeInput.max = '24';
-    msgFontSizeInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
+    const customThemeActionsWrapper = document.createElement('div');
+    customThemeActionsWrapper.style.cssText = "display: flex; flex-direction: column; gap: 10px;";
 
-    const msgFontSizeDefaultBtn = document.createElement('button');
-    msgFontSizeDefaultBtn.textContent = 'Default';
-    msgFontSizeDefaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
+    // Name input and Save button
+    const saveThemeRow = document.createElement('div');
+    saveThemeRow.style.cssText = "display: flex; align-items: center; gap: 8px;";
+    const newThemeNameInput = document.createElement('input');
+    newThemeNameInput.type = 'text';
+    newThemeNameInput.id = 'otk-custom-theme-name-input';
+    newThemeNameInput.placeholder = 'Enter Theme Name';
+    newThemeNameInput.style.cssText = "flex-grow: 1; height: 25px; box-sizing: border-box; font-size: 12px;";
+    const saveThemeButton = document.createElement('button');
+    saveThemeButton.id = 'otk-save-custom-theme-btn';
+    saveThemeButton.textContent = 'Save Current Theme';
+    saveThemeButton.style.cssText = "padding: 4px 8px; font-size: 11px; height: 25px;";
+    saveThemeRow.appendChild(newThemeNameInput);
+    saveThemeRow.appendChild(saveThemeButton);
+    customThemeActionsWrapper.appendChild(saveThemeRow);
 
-    msgFontSizeGroup.append(msgFontSizeLabel, msgFontSizeInput, msgFontSizeDefaultBtn);
-    themeSection.appendChild(msgFontSizeGroup); // Changed from contentArea
+    // Dropdown, Load, and Delete buttons
+    const manageThemeRow = document.createElement('div');
+    manageThemeRow.style.cssText = "display: flex; align-items: center; gap: 8px;";
+    const customThemesDropdown = document.createElement('select');
+    customThemesDropdown.id = 'otk-custom-themes-dropdown';
+    customThemesDropdown.style.cssText = "flex-grow: 1; height: 25px; box-sizing: border-box; font-size: 12px;";
+    const loadThemeButton = document.createElement('button');
+    loadThemeButton.id = 'otk-load-custom-theme-btn';
+    loadThemeButton.textContent = 'Load';
+    loadThemeButton.style.cssText = "padding: 4px 8px; font-size: 11px; height: 25px;";
+    const deleteThemeButton = document.createElement('button');
+    deleteThemeButton.id = 'otk-delete-custom-theme-btn';
+    deleteThemeButton.textContent = 'Delete';
+    deleteThemeButton.style.cssText = "padding: 4px 8px; font-size: 11px; height: 25px; background-color: #803333;"; // Dark red
+    deleteThemeButton.onmouseover = () => deleteThemeButton.style.backgroundColor = '#a04444';
+    deleteThemeButton.onmouseout = () => deleteThemeButton.style.backgroundColor = '#803333';
 
-    const initialMsgFontSize = getComputedStyle(document.documentElement).getPropertyValue('--otk-viewer-message-font-size').trim().replace('px', '');
 
-    const updateMsgFontSize = (size) => {
-        size = parseInt(size, 10);
-        if (isNaN(size) || size < parseInt(msgFontSizeInput.min, 10) || size > parseInt(msgFontSizeInput.max, 10)) {
-            consoleWarn("Invalid font size:", size);
-            // Optionally revert to initialMsgFontSize or clamp
-            msgFontSizeInput.value = initialMsgFontSize; // Revert to initial if invalid
+    manageThemeRow.appendChild(customThemesDropdown);
+    manageThemeRow.appendChild(loadThemeButton);
+    manageThemeRow.appendChild(deleteThemeButton);
+    customThemeActionsWrapper.appendChild(manageThemeRow);
+
+    themeOptionsContainer.appendChild(customThemeActionsWrapper);
+
+    const CUSTOM_THEMES_KEY = 'otkCustomThemes';
+
+    saveThemeButton.addEventListener('click', () => {
+        const themeName = newThemeNameInput.value.trim();
+        if (!themeName) {
+            alert("Please enter a name for the theme.");
+            newThemeNameInput.focus();
             return;
         }
-        document.documentElement.style.setProperty('--otk-viewer-message-font-size', `${size}px`);
-        msgFontSizeInput.value = size; // Ensure input reflects validated size
-        saveThemeSetting('viewerMessageFontSize', `${size}px`);
-    };
 
-    msgFontSizeInput.addEventListener('change', (e) => updateMsgFontSize(e.target.value)); // 'change' is better for number input validation
-    msgFontSizeDefaultBtn.addEventListener('click', () => {
-        document.documentElement.style.removeProperty('--otk-viewer-message-font-size');
-        msgFontSizeInput.value = initialMsgFontSize;
-        saveThemeSetting('viewerMessageFontSize', null);
+        const currentActiveSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
+        if (Object.keys(currentActiveSettings).length === 0) {
+            // If no settings are explicitly saved, gather them from current computed/default values
+            // This ensures a full theme object is saved.
+             const allConfigs = getAllOptionConfigs(); // Helper to get all theme configs
+             allConfigs.forEach(config => {
+                if (!currentActiveSettings[config.storageKey]) { // Only if not already set
+                    let value = getComputedStyle(document.documentElement).getPropertyValue(config.cssVariable)?.trim();
+                    if (!value && config.defaultValue) value = config.defaultValue; // Fallback to defined default
+                    if (value) currentActiveSettings[config.storageKey] = value;
+                }
+             });
+        }
+
+        consoleLog('[Debug Save Theme] currentActiveSettings before saving:', JSON.parse(JSON.stringify(currentActiveSettings)));
+        if (currentActiveSettings.viewerQuote1HeaderBorderColor) {
+            consoleLog(`  > viewerQuote1HeaderBorderColor in currentActiveSettings: ${currentActiveSettings.viewerQuote1HeaderBorderColor}`);
+        } else {
+            consoleLog(`  > viewerQuote1HeaderBorderColor NOT in currentActiveSettings. Will rely on computed/default.`);
+        }
+        if (currentActiveSettings.viewerQuote2plusHeaderBorderColor) {
+            consoleLog(`  > viewerQuote2plusHeaderBorderColor in currentActiveSettings: ${currentActiveSettings.viewerQuote2plusHeaderBorderColor}`);
+        } else {
+            consoleLog(`  > viewerQuote2plusHeaderBorderColor NOT in currentActiveSettings. Will rely on computed/default.`);
+        }
+
+
+        let customThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || [];
+        const existingThemeIndex = customThemes.findIndex(t => t.name === themeName);
+
+        if (existingThemeIndex > -1) {
+            if (!confirm(`A theme named "${themeName}" already exists. Overwrite it?`)) {
+                return;
+            }
+            customThemes[existingThemeIndex].settings = currentActiveSettings;
+            consoleLog(`Custom theme "${themeName}" overwritten.`);
+        } else {
+            customThemes.push({ name: themeName, settings: currentActiveSettings });
+            consoleLog(`Custom theme "${themeName}" saved.`);
+        }
+
+        localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(customThemes));
+        newThemeNameInput.value = ''; // Clear input
+        populateCustomThemesDropdown(); // To be created in next step
+        alert(`Theme "${themeName}" saved successfully!`);
     });
 
-    // --- GUI Bottom Border Color Option ---
-    const guiBottomBorderColorGroup = document.createElement('div');
-    guiBottomBorderColorGroup.style.cssText = "display: flex; align-items: center; gap: 8px;";
-    const guiBottomBorderColorLabel = document.createElement('label');
-    guiBottomBorderColorLabel.textContent = "GUI Bottom Border:";
-    guiBottomBorderColorLabel.htmlFor = 'otk-color-gui-bottom-border-picker';
-    guiBottomBorderColorLabel.style.cssText = "min-width: 130px; text-align: right; margin-right: 5px;";
-    const guiBottomBorderColorHexInput = document.createElement('input');
-    guiBottomBorderColorHexInput.type = 'text';
-    guiBottomBorderColorHexInput.id = 'otk-color-gui-bottom-border-hex';
-    guiBottomBorderColorHexInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box;";
-    const guiBottomBorderColorPicker = document.createElement('input');
-    guiBottomBorderColorPicker.type = 'color';
-    guiBottomBorderColorPicker.id = 'otk-color-gui-bottom-border-picker';
-    guiBottomBorderColorPicker.style.cssText = "width: 45px; height: 25px; padding: 0px 2px;";
-    const guiBottomBorderColorDefaultBtn = document.createElement('button');
-    guiBottomBorderColorDefaultBtn.textContent = 'Default';
-    guiBottomBorderColorDefaultBtn.style.cssText = "padding: 2px 5px; min-width: 60px; height: 25px;";
-    guiBottomBorderColorGroup.append(guiBottomBorderColorLabel, guiBottomBorderColorHexInput, guiBottomBorderColorPicker, guiBottomBorderColorDefaultBtn);
-    themeSection.appendChild(guiBottomBorderColorGroup); // Appending to themeSection
+    function populateCustomThemesDropdown() {
+        const dropdown = document.getElementById('otk-custom-themes-dropdown');
+        if (!dropdown) return;
 
-    const initialGuiBottomBorderColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-gui-bottom-border-color').trim();
-    const updateGuiBottomBorderColor = (color) => {
-        color = color.trim();
-        if (!/^#[0-9A-F]{6}$/i.test(color) && !/^#[0-9A-F]{3}$/i.test(color)) return;
-        document.documentElement.style.setProperty('--otk-gui-bottom-border-color', color);
-        guiBottomBorderColorHexInput.value = color;
-        guiBottomBorderColorPicker.value = color;
-        saveThemeSetting('guiBottomBorderColor', color);
-    };
-    guiBottomBorderColorHexInput.addEventListener('input', (e) => updateGuiBottomBorderColor(e.target.value));
-    guiBottomBorderColorPicker.addEventListener('input', (e) => updateGuiBottomBorderColor(e.target.value));
-    guiBottomBorderColorDefaultBtn.addEventListener('click', () => {
-        document.documentElement.style.removeProperty('--otk-gui-bottom-border-color');
-        guiBottomBorderColorHexInput.value = initialGuiBottomBorderColor;
-        guiBottomBorderColorPicker.value = initialGuiBottomBorderColor;
-        saveThemeSetting('guiBottomBorderColor', null);
+        dropdown.innerHTML = ''; // Clear existing options
+
+        const customThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || [];
+
+        if (customThemes.length === 0) {
+            const defaultOption = document.createElement('option');
+            defaultOption.textContent = "No Saved Themes";
+            defaultOption.disabled = true;
+            dropdown.appendChild(defaultOption);
+        } else {
+            customThemes.forEach(theme => {
+                const option = document.createElement('option');
+                option.value = theme.name;
+                option.textContent = theme.name;
+                dropdown.appendChild(option);
+            });
+        }
+    }
+    // Initial population of the dropdown when options window is set up
+    populateCustomThemesDropdown();
+
+    loadThemeButton.addEventListener('click', () => {
+        const selectedThemeName = customThemesDropdown.value;
+        if (!selectedThemeName || customThemesDropdown.selectedOptions.length === 0 || customThemesDropdown.selectedOptions[0].disabled) {
+            alert("Please select a theme to load.");
+            return;
+        }
+
+        const customThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || [];
+        const themeToLoad = customThemes.find(t => t.name === selectedThemeName);
+
+        if (!themeToLoad) {
+            alert(`Error: Theme "${selectedThemeName}" not found in storage.`);
+            return;
+        }
+
+        localStorage.setItem(THEME_SETTINGS_KEY, JSON.stringify(themeToLoad.settings));
+        applyThemeSettings(); // This will update CSS variables and all input fields
+        alert(`Theme "${selectedThemeName}" loaded successfully!`);
+        consoleLog(`Custom theme "${selectedThemeName}" loaded and applied.`);
+    });
+
+    deleteThemeButton.addEventListener('click', () => {
+        const selectedThemeName = customThemesDropdown.value;
+        if (!selectedThemeName || customThemesDropdown.selectedOptions.length === 0 || customThemesDropdown.selectedOptions[0].disabled) {
+            alert("Please select a theme to delete.");
+            return;
+        }
+
+        if (!confirm(`Are you sure you want to delete the theme "${selectedThemeName}"? This action cannot be undone.`)) {
+            return;
+        }
+
+        let customThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || [];
+        const updatedThemes = customThemes.filter(t => t.name !== selectedThemeName);
+
+        if (customThemes.length === updatedThemes.length) {
+            alert(`Error: Theme "${selectedThemeName}" not found for deletion.`); // Should not happen if selected from dropdown
+            return;
+        }
+
+        localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(updatedThemes));
+        populateCustomThemesDropdown(); // Refresh the dropdown
+        alert(`Theme "${selectedThemeName}" deleted successfully!`);
+        consoleLog(`Custom theme "${selectedThemeName}" deleted.`);
     });
 
 
+    // --- Reset All Button ---
+    // It should be outside the normal flow of generated options, or the last item.
+    // For now, let's re-add it manually after all generated content.
     const resetAllColorsButton = document.createElement('button');
     resetAllColorsButton.textContent = "Reset All Colors to Default";
-    resetAllColorsButton.id = 'otk-reset-all-colors-btn';
-    resetAllColorsButton.style.marginTop = "20px"; // Add some space above it
-    resetAllColorsButton.style.padding = "5px 10px";
-    themeSection.appendChild(resetAllColorsButton); // Changed from contentArea
+    resetAllColorsButton.id = 'otk-reset-all-colors-btn'; // Keep ID if applyThemeSettings uses it
+    resetAllColorsButton.style.cssText = "margin-top: 20px; padding: 5px 10px; display: block; margin-left: auto; margin-right: auto;";
+    themeOptionsContainer.appendChild(resetAllColorsButton);
+
+    // Helper function to get all theme configurations (used by save and reset)
+    function getAllOptionConfigs() {
+        return [
+            { storageKey: 'guiBgColor', cssVariable: '--otk-gui-bg-color', defaultValue: '#181818', inputType: 'color', idSuffix: 'gui-bg' },
+            { storageKey: 'titleTextColor', cssVariable: '--otk-title-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'title-text' },
+            { storageKey: 'guiThreadListTitleColor', cssVariable: '--otk-gui-threadlist-title-color', defaultValue: '#e0e0e0', inputType: 'color', idSuffix: 'threadlist-title' },
+            { storageKey: 'guiThreadListTimeColor', cssVariable: '--otk-gui-threadlist-time-color', defaultValue: '#aaa', inputType: 'color', idSuffix: 'threadlist-time' },
+            { storageKey: 'actualStatsTextColor', cssVariable: '--otk-stats-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'actual-stats-text' },
+            { storageKey: 'viewerBgColor', cssVariable: '--otk-viewer-bg-color', defaultValue: '#181818', inputType: 'color', idSuffix: 'viewer-bg' },
+            { storageKey: 'guiBottomBorderColor', cssVariable: '--otk-gui-bottom-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'gui-bottom-border' },
+            { storageKey: 'viewerMessageFontSize', cssVariable: '--otk-viewer-message-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', idSuffix: 'fontsize-message-text' },
+            { storageKey: 'msgDepth0BgColor', cssVariable: '--otk-msg-depth0-bg-color', defaultValue: '#343434', inputType: 'color', idSuffix: 'msg-depth0-bg' },
+            { storageKey: 'msgDepth0TextColor', cssVariable: '--otk-msg-depth0-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-text' },
+            { storageKey: 'msgDepth0HeaderTextColor', cssVariable: '--otk-msg-depth0-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-header-text' },
+            { storageKey: 'viewerHeaderBorderColor', cssVariable: '--otk-viewer-header-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'viewer-header-border' },
+            { storageKey: 'msgDepth1BgColor', cssVariable: '--otk-msg-depth1-bg-color', defaultValue: '#525252', inputType: 'color', idSuffix: 'msg-depth1-bg' },
+            { storageKey: 'msgDepth1TextColor', cssVariable: '--otk-msg-depth1-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-text' },
+            { storageKey: 'msgDepth1HeaderTextColor', cssVariable: '--otk-msg-depth1-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-header-text' },
+            { storageKey: 'viewerQuote1HeaderBorderColor', cssVariable: '--otk-viewer-quote1-header-border-color', defaultValue: '#343434', inputType: 'color', idSuffix: 'viewer-quote1-border' },
+            { storageKey: 'msgDepth2plusBgColor', cssVariable: '--otk-msg-depth2plus-bg-color', defaultValue: '#484848', inputType: 'color', idSuffix: 'msg-depth2plus-bg' },
+            { storageKey: 'msgDepth2plusTextColor', cssVariable: '--otk-msg-depth2plus-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-text' },
+            { storageKey: 'msgDepth2plusHeaderTextColor', cssVariable: '--otk-msg-depth2plus-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-header-text' },
+            { storageKey: 'viewerQuote2plusHeaderBorderColor', cssVariable: '--otk-viewer-quote2plus-header-border-color', defaultValue: '#2a2a2a', inputType: 'color', idSuffix: 'viewer-quote2plus-border' },
+            { storageKey: 'cogIconColor', cssVariable: '--otk-cog-icon-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'cog-icon' },
+            { storageKey: 'optionsTextColor', cssVariable: '--otk-options-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'options-text' },
+            { storageKey: 'newMessagesDividerColor', cssVariable: '--otk-new-messages-divider-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-divider' },
+            { storageKey: 'newMessagesFontColor', cssVariable: '--otk-new-messages-font-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-font' }
+        ];
+    }
+
 
     resetAllColorsButton.addEventListener('click', () => {
-        if (!confirm("Are you sure you want to reset all color settings to their defaults?")) {
+        if (!confirm("Are you sure you want to reset all theme settings to their defaults?")) {
             return;
         }
-        consoleLog("Resetting all implemented color settings to default...");
+        consoleLog("Resetting all theme settings to default...");
+        const allOptionConfigs = getAllOptionConfigs();
 
-        // GUI Background Color
-        document.documentElement.style.removeProperty('--otk-gui-bg-color');
-        const guiBgHexInput = document.getElementById('otk-color-gui-bg-hex');
-        const guiBgPicker = document.getElementById('otk-color-gui-bg-picker');
-        if (guiBgHexInput) guiBgHexInput.value = initialGuiBgColor; // initialGuiBgColor is in scope
-        if (guiBgPicker) guiBgPicker.value = initialGuiBgColor;
-        saveThemeSetting('guiBgColor', null);
+        allOptionConfigs.forEach(opt => {
+            document.documentElement.style.removeProperty(opt.cssVariable);
+            saveThemeSetting(opt.storageKey, null);
 
-        // Title Text Color
-        document.documentElement.style.removeProperty('--otk-title-text-color');
-        const titleTextColorHexInput = document.getElementById('otk-color-title-text-hex');
-        const titleTextColorPicker = document.getElementById('otk-color-title-text-picker');
-        if (titleTextColorHexInput) titleTextColorHexInput.value = initialTitleTextColor; // initialTitleTextColor is in scope
-        if (titleTextColorPicker) titleTextColorPicker.value = initialTitleTextColor;
-        saveThemeSetting('titleTextColor', null);
+            const mainInput = document.getElementById(`otk-${opt.idSuffix}`);
+            const hexInput = opt.inputType === 'color' ? document.getElementById(`otk-${opt.idSuffix}-hex`) : null;
+            
+            let cssDefaultValue = getComputedStyle(document.documentElement).getPropertyValue(opt.cssVariable)?.trim() || opt.defaultValue;
+            if (opt.unit && cssDefaultValue.endsWith(opt.unit)) {
+                cssDefaultValue = cssDefaultValue.replace(opt.unit, '');
+            }
 
-        // Options Panel Text Color (formerly GUI Text Color / Stats Text)
-        document.documentElement.style.removeProperty('--otk-options-text-color');
-        const optionsTextColorHexInput = document.getElementById('otk-color-options-text-hex');
-        const optionsTextColorPicker = document.getElementById('otk-color-options-text-picker');
-        if (optionsTextColorHexInput) optionsTextColorHexInput.value = initialOptionsTextColor; // initialOptionsTextColor is in scope
-        if (optionsTextColorPicker) optionsTextColorPicker.value = initialOptionsTextColor;
-        saveThemeSetting('optionsTextColor', null);
+            if (mainInput) mainInput.value = cssDefaultValue;
+            if (hexInput) hexInput.value = cssDefaultValue;
 
-        // Actual Stats Text Color
-        document.documentElement.style.removeProperty('--otk-stats-text-color');
-        const actualStatsTextColorHexInput = document.getElementById('otk-color-actual-stats-text-hex');
-        const actualStatsTextColorPicker = document.getElementById('otk-color-actual-stats-text-picker');
-        if (actualStatsTextColorHexInput) actualStatsTextColorHexInput.value = initialActualStatsTextColor; // initialActualStatsTextColor is in scope
-        if (actualStatsTextColorPicker) actualStatsTextColorPicker.value = initialActualStatsTextColor;
-        saveThemeSetting('actualStatsTextColor', null);
-
-        // Viewer Background Color
-        document.documentElement.style.removeProperty('--otk-viewer-bg-color');
-        const viewerBgHexInput = document.getElementById('otk-color-viewer-bg-hex');
-        const viewerBgPicker = document.getElementById('otk-color-viewer-bg-picker');
-        if (viewerBgHexInput) viewerBgHexInput.value = initialViewerBgColor; // initialViewerBgColor is in scope
-        if (viewerBgPicker) viewerBgPicker.value = initialViewerBgColor;
-        saveThemeSetting('viewerBgColor', null);
-
-        // GUI Thread List Titles
-        document.documentElement.style.removeProperty('--otk-gui-threadlist-title-color');
-        const threadListTitleColorHexInput = document.getElementById('otk-color-threadlist-title-hex');
-        const threadListTitleColorPicker = document.getElementById('otk-color-threadlist-title-picker');
-        if (threadListTitleColorHexInput) threadListTitleColorHexInput.value = initialThreadListTitleColor; // in scope
-        if (threadListTitleColorPicker) threadListTitleColorPicker.value = initialThreadListTitleColor;
-        saveThemeSetting('guiThreadListTitleColor', null);
-
-        // GUI Thread List Times
-        document.documentElement.style.removeProperty('--otk-gui-threadlist-time-color');
-        const threadListTimeColorHexInput = document.getElementById('otk-color-threadlist-time-hex');
-        const threadListTimeColorPicker = document.getElementById('otk-color-threadlist-time-picker');
-        if (threadListTimeColorHexInput) threadListTimeColorHexInput.value = initialThreadListTimeColor; // in scope
-        if (threadListTimeColorPicker) threadListTimeColorPicker.value = initialThreadListTimeColor;
-        saveThemeSetting('guiThreadListTimeColor', null);
-
-        // Viewer Header Border
-        document.documentElement.style.removeProperty('--otk-viewer-header-border-color');
-        const viewerHeaderBorderColorHexInput = document.getElementById('otk-color-viewer-header-border-hex');
-        const viewerHeaderBorderColorPicker = document.getElementById('otk-color-viewer-header-border-picker');
-        if (viewerHeaderBorderColorHexInput) viewerHeaderBorderColorHexInput.value = initialViewerHeaderBorderColor; // in scope
-        if (viewerHeaderBorderColorPicker) viewerHeaderBorderColorPicker.value = initialViewerHeaderBorderColor;
-        saveThemeSetting('viewerHeaderBorderColor', null);
-
-        // Viewer Quote L1 Border
-        document.documentElement.style.removeProperty('--otk-viewer-quote1-header-border-color');
-        const viewerQuote1BorderColorHexInput = document.getElementById('otk-color-viewer-quote1-border-hex');
-        const viewerQuote1BorderColorPicker = document.getElementById('otk-color-viewer-quote1-border-picker');
-        if (viewerQuote1BorderColorHexInput) viewerQuote1BorderColorHexInput.value = initialViewerQuote1BorderColor; // in scope
-        if (viewerQuote1BorderColorPicker) viewerQuote1BorderColorPicker.value = initialViewerQuote1BorderColor;
-        saveThemeSetting('viewerQuote1HeaderBorderColor', null);
-
-        // Message BG, Text, Header Text Colors by Depth
-        ['Depth 0', 'Depth 1', 'Depth 2+'].forEach((label, index) => {
-            const depthSuffix = index === 2 ? '2plus' : index;
-            // BG
-            const bgKey = `msgDepth${depthSuffix}BgColor`;
-            const bgCssVar = `--otk-msg-depth${depthSuffix}-bg-color`;
-            const bgIdSuffix = `msg-depth${depthSuffix}-bg`;
-            document.documentElement.style.removeProperty(bgCssVar);
-            const bgHexInput = document.getElementById(`otk-color-${bgIdSuffix}-hex`);
-            const bgPicker = document.getElementById(`otk-color-${bgIdSuffix}-picker`);
-            // Need to fetch initial default for these dynamically created inputs or re-use the one from their setup.
-            // For simplicity now, just clearing. Proper reset would re-fetch or store initial defaults globally.
-            // This requires initial<Type>Color variables to be accessible or re-fetched.
-            // For now, this will clear the override; the CSS default will apply. The input fields might not update to CSS default.
-            // This part needs the initial<ColorName> variables to be accessible.
-            // Let's assume they are in scope (they are defined within setupOptionsWindow for each group)
-            // This is a simplification: a more robust reset would get defaults from CSS again for inputs.
-            const initialBg = getComputedStyle(document.documentElement).getPropertyValue(bgCssVar).trim();
-            if (bgHexInput) bgHexInput.value = initialBg;
-            if (bgPicker) bgPicker.value = initialBg;
-            saveThemeSetting(bgKey, null);
-
-            // Text
-            const textKey = `msgDepth${depthSuffix}TextColor`;
-            const textCssVar = `--otk-msg-depth${depthSuffix}-text-color`;
-            const textIdSuffix = `msg-depth${depthSuffix}-text`;
-            document.documentElement.style.removeProperty(textCssVar);
-            const textHexInput = document.getElementById(`otk-color-${textIdSuffix}-hex`);
-            const textPicker = document.getElementById(`otk-color-${textIdSuffix}-picker`);
-            const initialText = getComputedStyle(document.documentElement).getPropertyValue(textCssVar).trim();
-            if (textHexInput) textHexInput.value = initialText;
-            if (textPicker) textPicker.value = initialText;
-            saveThemeSetting(textKey, null);
-
-            // Header Text
-            const headerTextKey = `msgDepth${depthSuffix}HeaderTextColor`;
-            const headerTextCssVar = `--otk-msg-depth${depthSuffix}-header-text-color`;
-            const headerTextIdSuffix = `msg-depth${depthSuffix}-header-text`;
-            document.documentElement.style.removeProperty(headerTextCssVar);
-            const headerTextHexInput = document.getElementById(`otk-color-${headerTextIdSuffix}-hex`);
-            const headerTextPicker = document.getElementById(`otk-color-${headerTextIdSuffix}-picker`);
-            const initialHeaderText = getComputedStyle(document.documentElement).getPropertyValue(headerTextCssVar).trim();
-            if (headerTextHexInput) headerTextHexInput.value = initialHeaderText;
-            if (headerTextPicker) headerTextPicker.value = initialHeaderText;
-            saveThemeSetting(headerTextKey, null);
+            if (opt.storageKey === 'cogIconColor') {
+                const cogIcon = document.getElementById('otk-settings-cog');
+                if(cogIcon) cogIcon.style.color = '';
+            }
         });
-
-        // Viewer Message Font Size
-        document.documentElement.style.removeProperty('--otk-viewer-message-font-size');
-        const msgFontSizeInput = document.getElementById('otk-fontsize-message-text');
-        if (msgFontSizeInput) msgFontSizeInput.value = initialMsgFontSize; // in scope
-        saveThemeSetting('viewerMessageFontSize', null);
-
-        // GUI Bottom Border Color
-        document.documentElement.style.removeProperty('--otk-gui-bottom-border-color');
-        const guiBottomBorderColorHexInput = document.getElementById('otk-color-gui-bottom-border-hex');
-        const guiBottomBorderColorPicker = document.getElementById('otk-color-gui-bottom-border-picker');
-        if (guiBottomBorderColorHexInput) guiBottomBorderColorHexInput.value = initialGuiBottomBorderColor; // in scope
-        if (guiBottomBorderColorPicker) guiBottomBorderColorPicker.value = initialGuiBottomBorderColor;
-        saveThemeSetting('guiBottomBorderColor', null);
-
-        alert("All customized color and font size settings have been reset to their defaults.");
+        // applyThemeSettings(); // Call to refresh all inputs based on new defaults
+        alert("All theme settings have been reset to their defaults.");
     });
-
 
     // Event Listeners for cog and close
     const cogIcon = document.getElementById('otk-settings-cog');
@@ -4190,6 +4161,10 @@ async function main() {
             --otk-msg-depth2plus-header-text-color: #e6e6e6;
             --otk-viewer-message-font-size: 13px; /* Default font size for message text */
             --otk-gui-bottom-border-color: #555; /* Default for GUI bottom border */
+            --otk-cog-icon-color: #e6e6e6; /* Default for settings cog icon */
+            --otk-viewer-quote2plus-header-border-color: #2a2a2a; /* Default for Depth 2+ message header underline */
+            --otk-new-messages-divider-color: #FFD700; /* Default for new message separator line */
+            --otk-new-messages-font-color: #FFD700; /* Default for new message separator text */
             /* Add more variables here as they are identified */
         }
 
