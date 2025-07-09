@@ -62,14 +62,16 @@
             flex-grow: 1;
         }
 
-        /* Message header with ID and timestamp */
+        /* Unified style for all headers using flexbox for alignment */
         .header-div {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             font-size: 12px;
             color: #555;
             white-space: nowrap;
-            text-align: right; /* Right-aligns the message number */
         }
-
+        
         /* The actual message text content */
         .content-div {
             white-space: pre-wrap; /* Preserves line breaks from the original post */
@@ -84,7 +86,10 @@
         <div class="post-div">
             <div class="color-square"></div>
             <div class="text-wrapper">
-                <div class="header-div">#936857738</div>
+                <div class="header-div">
+                    <span>11:31:24 09/07/2025</span>
+                    <span>#936857738</span>
+                </div>
                 <div class="content-div">Here is some sample text for the first post. It doesn't need to be long, just enough to demonstrate the layout.</div>
             </div>
         </div>
@@ -92,12 +97,14 @@
 
     <!-- Example 2: A message with one level of quotes -->
     <div class="message-container-main">
-        <!-- The quoted message (depth 1) -->
+        <!-- The quoted message (depth 1) - WITH prefixed date/time -->
         <div class="message-container-quote-depth-1">
             <div class="post-div">
-                <!-- No color square for quoted messages -->
                 <div class="text-wrapper">
-                    <div class="header-div">#936857595</div>
+                    <div class="header-div">
+                        <span>⤷ 11:23:14 09/07/2025</span>
+                        <span>#936857595</span>
+                    </div>
                     <div class="content-div">This is the original post that was quoted. The content has been replaced with this new text.</div>
                 </div>
             </div>
@@ -106,7 +113,10 @@
         <div class="post-div">
             <div class="color-square"></div>
             <div class="text-wrapper">
-                <div class="header-div">#936857734</div>
+                <div class="header-div">
+                    <span>11:31:17 09/07/2025</span>
+                    <span>#936857734</span>
+                </div>
                 <div class="content-div">This is the reply. As you can see, the quoted message now appears directly above it with its own content.</div>
             </div>
         </div>
@@ -120,7 +130,10 @@
             <div class="message-container-quote-depth-2">
                  <div class="post-div">
                     <div class="text-wrapper">
-                        <div class="header-div">#936857595</div>
+                        <div class="header-div">
+                            <span>⤷ 11:23:14 09/07/2025</span>
+                            <span>#936857595</span>
+                        </div>
                         <div class="content-div">This is the deepest, original message in the nested chain, now with new placeholder content.</div>
                     </div>
                 </div>
@@ -128,7 +141,10 @@
             <!-- The post content for the first level quote -->
             <div class="post-div">
                 <div class="text-wrapper">
-                    <div class="header-div">#936857730</div>
+                    <div class="header-div">
+                        <span>⤷ 11:31:04 09/07/2025</span>
+                        <span>#936857730</span>
+                    </div>
                     <div class="content-div">Here is the first reply in the chain, quoting the message from the block above this one.</div>
                 </div>
             </div>
@@ -137,7 +153,10 @@
         <div class="post-div">
             <div class="color-square"></div>
             <div class="text-wrapper">
-                <div class="header-div">#936857742</div>
+                <div class="header-div">
+                    <span>11:31:35 09/07/2025</span>
+                    <span>#936857742</span>
+                </div>
                 <div class="content-div">And finally, this is the top-level reply that contains the nested quotes. The text is different in each box to show how it all fits together.</div>
             </div>
         </div>
