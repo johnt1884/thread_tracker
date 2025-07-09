@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>4chan OTK Thread Viewer Replica</title>
+    <style>
+        /* Styles extracted and adapted from the provided UserScript */
+        body {
+            background: #fff4de;
+            font-family: Verdana, sans-serif;
+            font-size: 14px;
+            margin: 0;
+            padding: 10px 20px;
+        }
+
+        /* Container for a top-level message (depth 0) */
+        .message-container-main {
+            background-color: #fff;
+            border-radius: 4px;
+            padding: 6px 8px;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #ccc;
+            padding-bottom: 10px;
+        }
+        
+        /* Container for a quoted message inside another message */
+        .message-container-quote-depth-1 {
+            background-color: rgba(0, 0, 0, 0.05); /* Light grey for first level quote */
+            border-radius: 4px;
+            padding: 6px 8px;
+            margin-bottom: 8px;
+        }
+
+        .message-container-quote-depth-2 {
+            background-color: #fff; /* White for second level quote (alternating) */
+            border-radius: 4px;
+            padding: 6px 8px;
+            margin-bottom: 8px;
+        }
+
+        /* Flex container for the color square and text content */
+        .post-div {
+            display: flex;
+            align-items: flex-start;
+        }
+
+        /* The colored square on the left */
+        .color-square {
+            width: 15px;
+            height: 40px;
+            background-color: #4CAF50; /* Green from the screenshot */
+            border-radius: 3px;
+            margin-right: 10px;
+            flex-shrink: 0;
+        }
+
+        /* Wrapper for the header and content text */
+        .text-wrapper {
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+        }
+
+        /* Message header with ID and timestamp */
+        .header-div {
+            font-size: 12px;
+            color: #555;
+            white-space: nowrap;
+            text-align: right; /* Right-aligns the message number */
+        }
+
+        /* The actual message text content */
+        .content-div {
+            white-space: pre-wrap; /* Preserves line breaks from the original post */
+            word-wrap: break-word; /* Prevents long text from overflowing */
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Example 1: A message with no quotes -->
+    <div class="message-container-main">
+        <div class="post-div">
+            <div class="color-square"></div>
+            <div class="text-wrapper">
+                <div class="header-div">#936857738</div>
+                <div class="content-div">Here is some sample text for the first post. It doesn't need to be long, just enough to demonstrate the layout.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Example 2: A message with one level of quotes -->
+    <div class="message-container-main">
+        <!-- The quoted message (depth 1) -->
+        <div class="message-container-quote-depth-1">
+            <div class="post-div">
+                <!-- No color square for quoted messages -->
+                <div class="text-wrapper">
+                    <div class="header-div">#936857595</div>
+                    <div class="content-div">This is the original post that was quoted. The content has been replaced with this new text.</div>
+                </div>
+            </div>
+        </div>
+        <!-- The parent message that contains the quote -->
+        <div class="post-div">
+            <div class="color-square"></div>
+            <div class="text-wrapper">
+                <div class="header-div">#936857734</div>
+                <div class="content-div">This is the reply. As you can see, the quoted message now appears directly above it with its own content.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Example 3: A message with two levels of nested quotes -->
+    <div class="message-container-main">
+        <!-- The first level quote (depth 1) -->
+        <div class="message-container-quote-depth-1">
+            <!-- The second level quote (depth 2) -->
+            <div class="message-container-quote-depth-2">
+                 <div class="post-div">
+                    <div class="text-wrapper">
+                        <div class="header-div">#936857595</div>
+                        <div class="content-div">This is the deepest, original message in the nested chain, now with new placeholder content.</div>
+                    </div>
+                </div>
+            </div>
+            <!-- The post content for the first level quote -->
+            <div class="post-div">
+                <div class="text-wrapper">
+                    <div class="header-div">#936857730</div>
+                    <div class="content-div">Here is the first reply in the chain, quoting the message from the block above this one.</div>
+                </div>
+            </div>
+        </div>
+        <!-- The parent message that contains the nested quotes -->
+        <div class="post-div">
+            <div class="color-square"></div>
+            <div class="text-wrapper">
+                <div class="header-div">#936857742</div>
+                <div class="content-div">And finally, this is the top-level reply that contains the nested quotes. The text is different in each box to show how it all fits together.</div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
