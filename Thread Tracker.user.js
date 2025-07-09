@@ -82,19 +82,25 @@
             left: 0;
             width: 100%;
             height: calc(100vh - 86px); /* Full viewport height minus GUI height */
-            background-color: rgba(0,0,0,0.8); /* 80% opacity black */
+            background-color: rgba(var(--otk-loading-overlay-bg-rgb, 0,0,0), var(--otk-loading-overlay-opacity, 0.8)); /* Use CSS variables */
             z-index: 100000; /* Ensure it's on top of everything, including viewer */
             display: none; /* Hidden by default */
             flex-direction: column;
             align-items: center;
             justify-content: center;
             font-family: Verdana, sans-serif;
-            color: white;
+            color: var(--otk-loading-text-color, white); /* Use CSS variable */
         `;
 
         const detailsElement = document.createElement('div');
         detailsElement.id = 'otk-loading-details';
-        detailsElement.style.cssText = "margin-bottom: 20px; font-size: 16px;";
+        // Inherits color from parent overlay, specific text styling:
+        detailsElement.style.cssText = `
+            margin-bottom: 20px; 
+            font-size: 16px; 
+            white-space: pre-line; /* Allow \n to create line breaks */
+            text-align: center; /* Ensure multi-line text is also centered */
+        `;
         overlay.appendChild(detailsElement);
 
         const progressBarContainer = document.createElement('div');
@@ -102,8 +108,8 @@
         progressBarContainer.style.cssText = `
             width: 60%;
             max-width: 400px;
-            background-color: #333;
-            border: 1px solid #555;
+            background-color: var(--otk-loading-progress-bar-bg-color, #333); /* Use CSS variable */
+            border: 1px solid #555; /* Border color could also be a variable if needed */
             border-radius: 5px;
             padding: 2px;
         `;
@@ -114,11 +120,11 @@
         progressBar.style.cssText = `
             width: 0%;
             height: 25px;
-            background-color: #4CAF50;
+            background-color: var(--otk-loading-progress-bar-fill-color, #4CAF50); /* Use CSS variable */
             border-radius: 3px;
             text-align: center;
             line-height: 25px;
-            color: white;
+            color: var(--otk-loading-progress-bar-text-color, white); /* Use CSS variable */
             font-weight: bold;
             transition: width 0.3s ease;
         `;
@@ -918,6 +924,23 @@ function createStreamableEmbedElement(videoId) {
         return String(num).padStart(length, '0');
     }
 
+    function hexToRgbParts(hex) {
+        if (!hex) return '0,0,0'; // Default to black if invalid input
+        let shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])$/i;
+        hex = hex.replace(shorthandRegex, function(m, r, g, b) {
+            return r + r + g + g + b + b;
+        });
+
+        let result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        if (result) {
+            const r = parseInt(result[1], 16);
+            const g = parseInt(result[2], 16);
+            const b = parseInt(result[3], 16);
+            return `${r},${g},${b}`;
+        }
+        return '0,0,0'; // Fallback to black if full hex parsing fails
+    }
+
     function decodeEntities(encodedString) {
         const txt = document.createElement('textarea');
         txt.innerHTML = encodedString;
@@ -1385,26 +1408,42 @@ function createStreamableEmbedElement(videoId) {
         // Note: otk-messages-container now fills otk-viewer and handles all padding and scrolling.
         // otkViewer has 10px top/bottom padding, so messagesContainer effectively has that spacing.
 
-        const totalMessages = allMessages.length;
-        let messagesProcessed = 0;
+        const totalMessagesToRender = allMessages.length;
+        let messagesProcessedInViewer = 0;
+        let imagesFoundInViewer = 0;
+        let videosFoundInViewer = 0;
         const mediaLoadPromises = [];
+        const updateInterval = Math.max(1, Math.floor(totalMessagesToRender / 20)); // Update progress roughly 20 times or every message
 
-        for (let i = 0; i < totalMessages; i++) {
+        for (let i = 0; i < totalMessagesToRender; i++) {
             const message = allMessages[i];
-            renderedMessageIdsInViewer.add(message.id); // Track that this ID is being rendered
+            renderedMessageIdsInViewer.add(message.id); 
 
-            // Determine boardForLink for this message
-            const boardForLink = message.board || 'b'; // Fallback, ensure message object has 'board' if possible
-            const threadColor = getThreadColor(message.originalThreadId); // Get thread color for accent
+            const boardForLink = message.board || 'b'; 
+            const threadColor = getThreadColor(message.originalThreadId); 
 
-            // Use the helper function to create the message element
-            // For messages directly in the viewer, isTopLevelMessage is true, currentDepth is 0
             const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor);
             messagesContainer.appendChild(messageElement);
 
-            messagesProcessed++;
-            let currentProgress = (messagesProcessed / totalMessages) * 90;
-            updateLoadingProgress(currentProgress, `Processing message ${messagesProcessed} of ${totalMessages}...`);
+            messagesProcessedInViewer++;
+
+            if (message.attachment) {
+                const ext = message.attachment.ext.toLowerCase();
+                if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
+                    imagesFoundInViewer++;
+                } else if (['.webm', '.mp4'].includes(ext)) {
+                    videosFoundInViewer++;
+                }
+            }
+
+            if (messagesProcessedInViewer % updateInterval === 0 || messagesProcessedInViewer === totalMessagesToRender) {
+                let currentProgress = (messagesProcessedInViewer / totalMessagesToRender) * 90; // Up to 90% for this stage
+                let detailsStr = `Processing message ${messagesProcessedInViewer} of ${totalMessagesToRender}...`;
+                if (imagesFoundInViewer > 0 || videosFoundInViewer > 0) {
+                    detailsStr += ` Media: ${imagesFoundInViewer} imgs, ${videosFoundInViewer} vids.`;
+                }
+                updateLoadingProgress(currentProgress, detailsStr);
+            }
         }
         otkViewer.appendChild(messagesContainer);
 
@@ -1424,21 +1463,29 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
     updateDisplayedStatistics(); // Update stats after all media processing is attempted.
 
             let anchorScrolled = false;
-            const anchoredMessageId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
-            if (anchoredMessageId) {
-                const anchoredElement = messagesContainer.querySelector(`div[data-message-id="${anchoredMessageId}"]`);
+            const anchoredInstanceId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
+            if (anchoredInstanceId) {
+                // The ID stored is now always the unique instance ID of the DOM element
+                const anchoredElement = document.getElementById(anchoredInstanceId);
                 if (anchoredElement) {
                     try {
-                        anchoredElement.scrollIntoView({ behavior: 'auto', block: 'center' });
-                        anchorScrolled = true;
-                        consoleLog(`Scrolled to anchored message: ${anchoredMessageId}`);
+                        // Ensure the element is within the messagesContainer before scrolling
+                        if (messagesContainer.contains(anchoredElement)) {
+                            anchoredElement.scrollIntoView({ behavior: 'auto', block: 'center' });
+                            anchorScrolled = true;
+                            consoleLog(`Scrolled to anchored instance: ${anchoredInstanceId}`);
+                        } else {
+                            consoleWarn(`Anchored element ${anchoredInstanceId} found in document, but not within messagesContainer. Cannot scroll.`);
+                            // This might happen if the viewer was cleared and re-rendered, and old IDs persist.
+                            // localStorage.removeItem(ANCHORED_MESSAGE_ID_KEY); // Consider removing if invalid
+                        }
                     } catch (e) {
-                        consoleError("Error scrolling to anchored message:", e);
+                        consoleError("Error scrolling to anchored instance:", e);
                     }
                 } else {
-                    consoleWarn(`Anchored message ID ${anchoredMessageId} not found in DOM to scroll to.`);
+                    consoleWarn(`Anchored instance ID ${anchoredInstanceId} not found in DOM to scroll to.`);
                     // Optionally remove invalid anchor from localStorage if element not found after full render
-                    // localStorage.removeItem(ANCHORED_MESSAGE_ID_KEY);
+                    localStorage.removeItem(ANCHORED_MESSAGE_ID_KEY); // More aggressively remove if not found
                 }
             }
 
@@ -1861,40 +1908,64 @@ messageDiv.style.cssText = `
 
         messageDiv.appendChild(textElement);
 
-        // Add click listener to the main messageDiv for anchoring
+        // Generate a unique instance ID for this specific DOM element
+        // This ID will be used for anchoring and precise scrolling.
+        const uniqueInstanceId = `otk-instance-${message.id}-${currentDepth}-${Date.now().toString(36)}${Math.random().toString(36).substr(2, 5)}`;
+        messageDiv.id = uniqueInstanceId;
+        messageDiv.setAttribute('data-original-message-id', message.id); // Keep original ID for reference if needed
+
+        // Add click listener to the messageDiv for anchoring
         messageDiv.addEventListener('click', (event) => {
             // Prevent anchoring if clicking on known interactive elements
-            if (event.target.tagName === 'A' ||
-                event.target.closest('a') ||
-                event.target.tagName === 'IMG' ||
-                event.target.tagName === 'VIDEO' ||
+            const targetTagName = event.target.tagName;
+            if (targetTagName === 'A' || event.target.closest('a') ||
+                targetTagName === 'IMG' || targetTagName === 'VIDEO' ||
+                targetTagName === 'IFRAME' || event.target.closest('iframe') || // Include iframes for embeds
                 event.target.isContentEditable ||
-                (event.target.classList && event.target.classList.contains('thumbnail-link'))) { // Example specific class
-                // consoleLog("Anchor click ignored due to interactive target:", event.target);
+                (event.target.classList && (
+                    event.target.classList.contains('thumbnail-link') || // Specific class for some links
+                    event.target.classList.contains('otk-youtube-embed-wrapper') || // Wrapper for embeds
+                    event.target.classList.contains('otk-twitch-embed-wrapper') ||
+                    event.target.classList.contains('otk-streamable-embed-wrapper')
+                )) ||
+                (event.target.closest && ( // Check closest for embed wrappers too
+                    event.target.closest('.otk-youtube-embed-wrapper') ||
+                    event.target.closest('.otk-twitch-embed-wrapper') ||
+                    event.target.closest('.otk-streamable-embed-wrapper')
+                ))
+            ) {
+                // consoleLog(`Anchor click ignored due to interactive target:`, event.target);
                 return;
             }
 
-            const currentMessageId = messageDiv.getAttribute('data-message-id');
-            const currentlyAnchoredId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
+            // If this message is a quote (not top-level), stop event propagation
+            // to prevent parent message's click handler from also firing if structures are nested.
+            if (!isTopLevelMessage) {
+                event.stopPropagation();
+            }
 
-            if (currentMessageId === currentlyAnchoredId) {
+            const currentlyAnchoredInstanceId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
+
+            if (uniqueInstanceId === currentlyAnchoredInstanceId) {
+                // Clicking the already anchored message: un-anchor it
                 messageDiv.classList.remove(ANCHORED_MESSAGE_CLASS);
                 localStorage.removeItem(ANCHORED_MESSAGE_ID_KEY);
-                consoleLog(`Un-anchored message: ${currentMessageId}`);
+                consoleLog(`Un-anchored instance: ${uniqueInstanceId} (Original ID: ${message.id})`);
             } else {
+                // Clicking a new message or a different message: anchor it
                 const oldAnchorElement = document.querySelector(`.${ANCHORED_MESSAGE_CLASS}`);
                 if (oldAnchorElement) {
                     oldAnchorElement.classList.remove(ANCHORED_MESSAGE_CLASS);
                 }
                 messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
-                localStorage.setItem(ANCHORED_MESSAGE_ID_KEY, currentMessageId);
-                consoleLog(`Anchored message: ${currentMessageId}`);
+                localStorage.setItem(ANCHORED_MESSAGE_ID_KEY, uniqueInstanceId);
+                consoleLog(`Anchored new instance: ${uniqueInstanceId} (Original ID: ${message.id})`);
             }
         });
 
         // Initial highlight check when the element is first created
-        const initiallyAnchoredId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
-        if (message.id.toString() === initiallyAnchoredId) {
+        const initiallyAnchoredInstanceId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
+        if (uniqueInstanceId === initiallyAnchoredInstanceId) {
             messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
         }
 
@@ -2089,12 +2160,16 @@ messageDiv.style.cssText = `
             const separatorDiv = document.createElement('div');
             separatorDiv.style.cssText = `
                 border-top: 2px dashed var(--otk-new-messages-divider-color);
-                margin: 20px 0;
+                margin: 20px 0; /* Keeps vertical spacing */
                 padding-top: 10px;
-                text-align: center;
+                padding-bottom: 10px; /* Add some padding below the text as well */
+                padding-left: 15px; /* Indent text from the left */
+                text-align: left; /* Align text to the left */
                 color: var(--otk-new-messages-font-color);
                 font-size: 12px;
                 font-style: italic;
+                width: 100%; /* Ensure it spans the container if not already */
+                box-sizing: border-box; /* Include padding in width calculation */
             `;
             const now = new Date();
             const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2224,18 +2299,18 @@ messageDiv.style.cssText = `
             // consoleLog('[DebugRefreshV2-FTM] Response status for', threadId, ':', response.status, 'OK:', response.ok); // Removed
 
             if (response.status === 304) {
-                consoleLog(`Thread ${threadId} not modified (304).`); // Standard log
-                // consoleLog('[DebugRefreshV2-FTM] Handling 304 - RETURNING NOT_MODIFIED for threadId:', threadId); // Removed
-                return { status: 'not_modified', threadId: threadId };
+                consoleLog(`Thread ${threadId} not modified (304).`);
+                return { status: 'not_modified', threadId: threadId, messages: [], counts: { fetchedMessages: 0, fetchedImages: 0, fetchedVideos: 0, newlyStoredImages: 0, newlyStoredVideos: 0 } };
             }
 
+            const defaultEmptyReturn = { messages: [], counts: { fetchedMessages: 0, fetchedImages: 0, fetchedVideos: 0, newlyStoredImages: 0, newlyStoredVideos: 0 } };
+
             if (!response.ok) { // Handles non-304 errors
-                consoleWarn(`Fetch error for thread ${threadId}: ${response.status} ${response.statusText}`); // Standard log
-                // consoleLog('[DebugRefreshV2-FTM] Response NOT OK (and not 304) for', threadId, '- Status:', response.status, 'RETURNING [].'); // Removed
+                consoleWarn(`Fetch error for thread ${threadId}: ${response.status} ${response.statusText}`);
                 if (response.status === 404) {
                     delete threadFetchMetadata[threadId]; // Clear metadata on 404
                 }
-                return [];
+                return defaultEmptyReturn; // Return new structure on error
             }
 
             // If response is OK (200), store new ETag/Last-Modified
@@ -2264,16 +2339,21 @@ messageDiv.style.cssText = `
             const threadData = await response.json();
             // consoleLog('[DebugRefreshV2-FTM] Successfully got JSON for threadId:', threadId, 'Post count in JSON:', threadData.posts ? threadData.posts.length : 'N/A'); // Removed
             if (!threadData.posts || threadData.posts.length === 0) {
-                // consoleLog('[DebugRefreshV2-FTM] No posts in JSON (after 200 OK) for threadId:', threadId, 'RETURNING [].'); // Removed
-                consoleLog(`No posts in JSON for thread ${threadId}.`); // Standard log
-                return [];
+                consoleLog(`No posts in JSON for thread ${threadId}.`);
+                return defaultEmptyReturn; // Return new structure if no posts
             }
 
             const opPost = threadData.posts[0];
             const posts = threadData.posts;
             const processedMessages = [];
+            let fetchedMessagesInThread = 0;
+            let fetchedImagesInThread = 0;
+            let fetchedVideosInThread = 0;
+            let newlyStoredImagesInThread = 0;
+            const newlyStoredVideosInThread = 0; // Stays 0 for now as videos are not stored in IDB
 
             for (const post of posts) {
+                fetchedMessagesInThread++;
                 const message = {
                     id: post.no,
                     time: post.time,
@@ -2370,11 +2450,15 @@ messageDiv.style.cssText = `
                                             // Update local media counts
                                             const ext = post.ext.toLowerCase();
                                             if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
+                                                fetchedImagesInThread++; // Count all images encountered
                                                 let currentImageCount = parseInt(localStorage.getItem(LOCAL_IMAGE_COUNT_KEY) || '0');
                                                 localStorage.setItem(LOCAL_IMAGE_COUNT_KEY, (currentImageCount + 1).toString());
+                                                newlyStoredImagesInThread++; // Increment if successfully stored
                                             } else if (['.webm', '.mp4'].includes(ext)) {
+                                                fetchedVideosInThread++; // Count all videos encountered
                                                 let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
                                                 localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
+                                                // newlyStoredVideosInThread would be incremented here if they were stored
                                             }
                                             updateDisplayedStatistics(); // Refresh stats display
 
@@ -2396,14 +2480,59 @@ messageDiv.style.cssText = `
                         consoleWarn('otkMediaDB not available for media operations (post ${post.no}).');
                     }
                 }
+                // If attachment was not stored (e.g., already in DB or download failed), but is an image/video, still count as fetched.
+                // This logic is slightly complex because the primary counting for fetchedImages/Videos happens inside the IDB storage path.
+                // A simpler way for fetched media is to count them when `message.attachment` is first processed.
+                if (post.filename && post.ext) { // This block is outside the IDB check, runs if attachment exists
+                    const ext = post.ext.toLowerCase();
+                    if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
+                        // If not already counted by the IDB storage success path (e.g. it was already in DB or failed download)
+                        // This can lead to double counting if not careful.
+                        // Let's refine: `fetchedImagesInThread` should be incremented once when an image attachment is identified.
+                        // The current location increments it only on successful *new* store.
+                        // This will be handled by moving the increment outside the successful store block or before it.
+                        // For now, the current logic for `newlyStoredImagesInThread` is correct.
+                        // `fetchedImagesInThread` needs to be incremented unconditionally if `post.ext` is an image type.
+                    } else if (['.webm', '.mp4'].includes(ext)) {
+                        // Similar for videos.
+                    }
+                }
                 processedMessages.push(message);
             }
-            consoleLog('[DebugRefreshV2-FTM] Successfully processed messages for threadId:', threadId, 'RETURNING message count:', processedMessages.length, 'First message ID (if any):', processedMessages.length > 0 ? processedMessages[0].id : 'N/A');
-            return processedMessages;
+
+            // Refined counting for fetched media (regardless of storage status)
+            // This ensures fetchedImagesInThread and fetchedVideosInThread are accurate even if media was already in DB.
+            // The newlyStoredImagesInThread is correctly counted only upon successful new storage.
+            let trueFetchedImages = 0;
+            let trueFetchedVideos = 0;
+            processedMessages.forEach(msg => {
+                if (msg.attachment && msg.attachment.ext) {
+                    const ext = msg.attachment.ext.toLowerCase();
+                    if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
+                        trueFetchedImages++;
+                    } else if (['.webm', '.mp4'].includes(ext)) {
+                        trueFetchedVideos++;
+                    }
+                }
+            });
+            fetchedImagesInThread = trueFetchedImages;
+            fetchedVideosInThread = trueFetchedVideos;
+
+
+            consoleLog(`[fetchThreadMessages] Processed thread ${threadId}: ${fetchedMessagesInThread} msgs, ${fetchedImagesInThread} imgs, ${fetchedVideosInThread} vids. Stored: ${newlyStoredImagesInThread} imgs.`);
+            return {
+                messages: processedMessages,
+                counts: {
+                    fetchedMessages: fetchedMessagesInThread,
+                    fetchedImages: fetchedImagesInThread,
+                    fetchedVideos: fetchedVideosInThread,
+                    newlyStoredImages: newlyStoredImagesInThread,
+                    newlyStoredVideos: newlyStoredVideosInThread // Will be 0
+                }
+            };
         } catch (error) {
             consoleError(`fetchThreadMessages error for thread ${threadId}:`, error);
-            consoleLog('[DebugRefreshV2-FTM] CATCH block for threadId:', threadId, 'Error:', error.message, 'RETURNING [].');
-            return [];
+            return { messages: [], counts: { fetchedMessages: 0, fetchedImages: 0, fetchedVideos: 0, newlyStoredImages: 0, newlyStoredVideos: 0 } }; // Return new structure on error
         }
     }
 
@@ -2520,17 +2649,18 @@ messageDiv.style.cssText = `
     async function refreshThreadsAndMessages() { // Manual Refresh
         consoleLog('[Manual] Refreshing threads and messages...');
         isManualRefreshInProgress = true;
-        showLoadingScreen("Refreshing data from 4chan...");
+        showLoadingScreen("Initializing refresh..."); // Initial message
         try {
-            // Use a slight delay to ensure the loading screen renders
-            await new Promise(resolve => setTimeout(resolve, 50));
+            await new Promise(resolve => setTimeout(resolve, 50)); // Ensure loading screen renders
 
+            updateLoadingProgress(5, "Scanning catalog for OTK threads...");
             const foundThreads = await scanCatalog();
             const foundIds = new Set(foundThreads.map(t => Number(t.id)));
             consoleLog(`[Manual] scanCatalog found ${foundThreads.length} threads:`, Array.from(foundIds));
-            updateLoadingProgress(20, `Found ${foundThreads.length} OTK threads. Syncing and fetching details...`);
+            updateLoadingProgress(10, `Catalog scan complete. Found ${foundThreads.length} OTK threads. Syncing with local list...`);
 
             const previousActiveThreadIds = new Set(activeThreads.map(id => Number(id)));
+            let threadsToFetch = []; // Store actual threadIds to fetch
 
             activeThreads = activeThreads.filter(threadId => {
                 const isLive = foundIds.has(Number(threadId));
@@ -2545,89 +2675,95 @@ messageDiv.style.cssText = `
             foundThreads.forEach(t => {
                 const threadIdNum = Number(t.id);
                 if (!previousActiveThreadIds.has(threadIdNum) && !activeThreads.includes(threadIdNum)) {
-                    consoleLog(`[Manual] Adding new thread ${threadIdNum}.`);
+                    consoleLog(`[Manual] Adding new thread ${threadIdNum} to active list.`);
                     activeThreads.push(threadIdNum);
-                    getThreadColor(threadIdNum);
+                }
+                // All found threads (new or existing) are candidates for fetching
+                if (!threadsToFetch.includes(threadIdNum)) {
+                    threadsToFetch.push(threadIdNum);
                 }
             });
-            consoleLog(`[Manual] Active threads after catalog sync: ${activeThreads.length}`, activeThreads);
-
-            const totalThreadsToFetch = activeThreads.length;
-            let threadsFetched = 0;
-    const fetchPromises = activeThreads.map(threadId => {
-        // Update progress inside the map for better granularity if needed, or outside before Promise.allSettled
-        // For simplicity, initial progress update can be before this map.
-        // Detailed progress can be updated as promises resolve.
-        return fetchThreadMessages(threadId).then(messages => ({ threadId, messages, status: 'fulfilled' }))
-            .catch(error => ({ threadId, error, status: 'rejected' }));
-    });
-
-    updateLoadingProgress(30, `Fetching data for ${activeThreads.length} threads concurrently...`);
-
-    const results = await Promise.allSettled(fetchPromises);
-    let currentProgress = 30;
-    const progressIncrement = results.length > 0 ? 60 / results.length : 0; // 60% of progress for processing results
-
-    results.forEach(result => {
-        currentProgress += progressIncrement;
-        updateLoadingProgress(currentProgress, `Processing fetched thread data...`);
-        // consoleLog('[DebugRefreshV2] refreshThreadsAndMessages - Raw Promise.allSettled result:', JSON.stringify(result)); // Removed
-
-        if (result.status === 'fulfilled' && result.value) {
-            // consoleLog('[DebugRefreshV2] refreshThreadsAndMessages - Fulfilled promise value:', JSON.stringify(result.value)); // Removed
-            const { threadId, messages: newMessages, status: fetchStatus } = result.value; // status here is from our wrapper
-            // consoleLog('[DebugRefreshV2] refreshThreadsAndMessages - Destructured - threadId:', threadId, 'fetchStatus (from wrapper):', fetchStatus, 'newMessages type:', typeof newMessages, 'is Array?:', Array.isArray(newMessages), 'length (if array):', Array.isArray(newMessages) ? newMessages.length : 'N/A'); // Removed
-
-            if (fetchStatus === 'rejected') { // Handle errors caught by our .catch in the map
-                consoleError(`[Manual] Error fetching thread ${threadId}:`, result.value.error);
-                // Optionally remove thread if fetch failed significantly, though catalog scan is main source of truth for active
-                return; // Skip processing this thread
-            }
-
-            // consoleLog(`[Manual] Processing fetched messages for thread ${threadId}. Result:`, newMessages); // Original log, can be removed or kept
-            // consoleLog('[DebugRefreshV2] refreshThreadsAndMessages - About to process newMessages for thread:', threadId, 'Value:', JSON.stringify(newMessages)); // Removed
-
-
-            // Handle 'not_modified' status from fetchThreadMessages
-            if (newMessages && typeof newMessages === 'object' && newMessages.status === 'not_modified' && newMessages.threadId === threadId) {
-                consoleLog(`[Manual] Thread ${threadId} was not modified. Skipping message update for this thread.`);
-                // Ensure thread remains in activeThreads if it wasn't pruned by catalog scan - this is handled by catalog logic primarily
-            } else if (Array.isArray(newMessages) && newMessages.length > 0) { // Regular message array
-                // consoleLog(`[DebugRefreshV2] refreshThreadsAndMessages - Processing ${newMessages.length} messages for thread ${threadId}.`); // Removed
-                consoleLog(`[Manual] Processing ${newMessages.length} messages for thread ${threadId}.`); // Standard log
-                let existing = messagesByThreadId[threadId] || [];
-                let existingIds = new Set(existing.map(m => m.id));
-                let updatedMessages = [...existing];
-                newMessages.forEach(m => {
-                    if (!existingIds.has(m.id)) {
-                        updatedMessages.push(m);
-                    }
-                });
-                updatedMessages.sort((a, b) => a.time - b.time);
-                messagesByThreadId[threadId] = updatedMessages;
-                if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
-                    messagesByThreadId[threadId][0].title = newMessages[0].title;
-                        }
-            } else if (newMessages && newMessages.length === 0) { // Explicitly zero messages returned, not 'not_modified'
-                // This means thread was fetched, but it's empty or an issue occurred returning empty array.
-                // If it's still in activeThreads (from catalog), it implies it might have been pruned just now or is new & empty.
-                // The catalog scan is the primary source for removing threads.
-                // If fetchThreadMessages returns empty for a 404, that's handled there.
-                // Here, if it's still active, we just note no new messages.
-                consoleLog(`[Manual] No new messages returned or thread is empty for active thread ${threadId}.`);
-                    }
-            // If newMessages is null/undefined (and not 'not_modified'), it implies an issue caught by our wrapper.
-            // Already handled by fetchStatus === 'rejected' check.
-
-        } else if (result.status === 'rejected') {
-            // This catches errors if fetchThreadMessages itself throws unhandled or if Promise.allSettled has issues with a promise
-            consoleError(`[Manual] Promise rejected for a thread fetch operation:`, result.reason);
-            // Potentially find threadId if it's part of result.reason, though our wrapper should prevent this branch mostly
+            // Also add existing active threads that are still in foundIds to threadsToFetch
+            activeThreads.forEach(existingThreadId => {
+                if (foundIds.has(existingThreadId) && !threadsToFetch.includes(existingThreadId)) {
+                    threadsToFetch.push(existingThreadId);
                 }
-    });
+            });
 
-    // Re-filter activeThreads based on whether messagesByThreadId still has entries for them,
-    // as some might have been implicitly removed if fetchThreadMessages indicated a 404 (by returning empty array and being handled by prior logic)
+            consoleLog(`[Manual] Active threads after catalog sync: ${activeThreads.length}`, activeThreads);
+            consoleLog(`[Manual] Threads to fetch this cycle: ${threadsToFetch.length}`, threadsToFetch);
+            updateLoadingProgress(15, `Preparing to fetch data for ${threadsToFetch.length} threads...`);
+
+            let totalNewMessagesThisRefresh = 0;
+            let totalNewImagesThisRefresh = 0; // Fetched images
+            let totalNewVideosThisRefresh = 0; // Fetched videos
+            let totalImagesStoredThisRefresh = 0;
+            // totalVideosStoredThisRefresh remains 0
+
+            let threadsProcessedCount = 0;
+            const totalThreadsToProcess = threadsToFetch.length;
+
+            // Use a sequential loop for fetching to update loading screen more granularly per thread
+            for (const threadId of threadsToFetch) {
+                threadsProcessedCount++;
+                const progressPercentage = 15 + Math.round((threadsProcessedCount / totalThreadsToProcess) * 75); // 15% (catalog) + 75% (fetching/processing)
+                
+                let statusText = `Processing thread ${threadsProcessedCount}/${totalThreadsToProcess} (ID: ${threadId})...`;
+                if (totalNewMessagesThisRefresh > 0 || totalNewImagesThisRefresh > 0) {
+                    statusText += `\nSo far: ${totalNewMessagesThisRefresh} new msgs, ${totalNewImagesThisRefresh} imgs (${totalImagesStoredThisRefresh} stored), ${totalNewVideosThisRefresh} vids.`;
+                }
+                updateLoadingProgress(progressPercentage, statusText);
+
+                try {
+                    const result = await fetchThreadMessages(threadId); // fetchThreadMessages is already async
+
+                    if (result.status === 'not_modified') {
+                        consoleLog(`[Manual] Thread ${threadId} not modified. Skipping message update.`);
+                        continue; // Next thread
+                    }
+
+                    const newMessagesData = result.messages; // This is an array of message objects
+                    const counts = result.counts;
+
+                    if (Array.isArray(newMessagesData)) {
+                        let actualNewMessagesInThread = 0;
+                        if (newMessagesData.length > 0) {
+                            let existing = messagesByThreadId[threadId] || [];
+                            let existingIds = new Set(existing.map(m => m.id));
+                            let updatedMessages = [...existing];
+                            newMessagesData.forEach(m => {
+                                if (!existingIds.has(m.id)) {
+                                    updatedMessages.push(m);
+                                    actualNewMessagesInThread++;
+                                }
+                            });
+                            updatedMessages.sort((a, b) => a.time - b.time);
+                            messagesByThreadId[threadId] = updatedMessages;
+                            if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
+                                messagesByThreadId[threadId][0].title = newMessagesData[0].title;
+                            }
+                        }
+                        totalNewMessagesThisRefresh += actualNewMessagesInThread;
+                        totalNewImagesThisRefresh += counts.fetchedImages;
+                        totalNewVideosThisRefresh += counts.fetchedVideos;
+                        totalImagesStoredThisRefresh += counts.newlyStoredImages;
+                        // totalVideosStoredThisRefresh += counts.newlyStoredVideos; (will be 0)
+
+                        consoleLog(`[Manual] Processed thread ${threadId}. Fetched: ${counts.fetchedMessages} msgs, ${counts.fetchedImages} imgs, ${counts.fetchedVideos} vids. Added: ${actualNewMessagesInThread} new msgs. Stored: ${counts.newlyStoredImages} imgs.`);
+                    }
+                } catch (error) {
+                    consoleError(`[Manual] Error processing thread ${threadId} in loop:`, error);
+                    // Continue to next thread
+                }
+            }
+            
+            // Final update to loading screen after loop
+            let finalStatusText = `Refresh complete. Added: ${totalNewMessagesThisRefresh} new msgs, ${totalNewImagesThisRefresh} imgs (${totalImagesStoredThisRefresh} stored), ${totalNewVideosThisRefresh} vids.`;
+            updateLoadingProgress(90, finalStatusText);
+
+
+    // Re-filter activeThreads based on whether messagesByThreadId still has entries for them
+    // This was previously commented out as too aggressive. Catalog scan is primary.
     // However, catalog scan is the main authority. This step might be redundant if catalog scan is robust.
     // For now, let's assume catalog scan + the processing logic above correctly maintains activeThreads.
     // activeThreads = activeThreads.filter(id => messagesByThreadId[id] && messagesByThreadId[id].length > 0);
@@ -2869,20 +3005,58 @@ messageDiv.style.cssText = `
             const button = document.createElement('button');
             if (id) button.id = id;
             button.textContent = text;
+            button.classList.add('otk-tracker-button'); // Add a common class for potential shared base styles not from variables
             button.style.cssText = `
                 padding: 5px 10px;
                 cursor: pointer;
-                background-color: #555;
-                color: white;
-                border: 1px solid #777;
+                background-color: var(--otk-button-bg-color);
+                color: var(--otk-button-text-color);
+                border: 1px solid var(--otk-button-border-color);
                 border-radius: 3px;
                 font-size: 13px;
                 white-space: nowrap; /* Prevent button text wrapping */
+                /* Transition for smooth background color change can be added here or in CSS */
+                transition: background-color 0.15s ease-in-out;
             `;
-            button.onmouseover = () => button.style.backgroundColor = '#666';
-            button.onmouseout = () => button.style.backgroundColor = '#555';
-            button.onmousedown = () => button.style.backgroundColor = '#444';
-            button.onmouseup = () => button.style.backgroundColor = '#666';
+
+            button.addEventListener('mouseover', () => {
+                if (!button.disabled) { // Check if button is not disabled
+                    button.classList.add('otk-button--hover');
+                    // Fallback if CSS variables/classes somehow fail, or for non-variable parts of hover
+                    // button.style.backgroundColor = 'var(--otk-button-hover-bg-color)'; // Direct application as fallback/override example
+                }
+            });
+            button.addEventListener('mouseout', () => {
+                if (!button.disabled) {
+                    button.classList.remove('otk-button--hover');
+                    button.classList.remove('otk-button--active'); // Ensure active is also removed if mouse leaves while pressed
+                    // Fallback: reset to base color
+                    // button.style.backgroundColor = 'var(--otk-button-bg-color)';
+                }
+            });
+            button.addEventListener('mousedown', () => {
+                if (!button.disabled) {
+                    button.classList.add('otk-button--active');
+                    // Fallback
+                    // button.style.backgroundColor = 'var(--otk-button-active-bg-color)';
+                }
+            });
+            button.addEventListener('mouseup', () => {
+                if (!button.disabled) {
+                    button.classList.remove('otk-button--active');
+                    // If mouse is still over, hover effect should apply.
+                    // If mouseup happens outside, mouseout would have cleared hover.
+                    // If mouseup happens inside, it should revert to hover state if still over.
+                    // The mouseout listener already handles removing active and hover if mouse leaves.
+                    // So, if still over, ensure hover is present.
+                    if (button.matches(':hover')) { // Check if mouse is still over the button
+                         button.classList.add('otk-button--hover');
+                    }
+                    // Fallback
+                    // if (button.matches(':hover')) button.style.backgroundColor = 'var(--otk-button-hover-bg-color)';
+                    // else button.style.backgroundColor = 'var(--otk-button-bg-color)';
+                }
+            });
             return button;
         }
 
@@ -3338,6 +3512,97 @@ function applyThemeSettings() {
         if (hexInput) hexInput.value = settings.newMessagesFontColor;
         if (picker) picker.value = settings.newMessagesFontColor;
     }
+
+    // GUI Button Colors
+    const buttonColorConfigs = [
+        { key: 'guiButtonBgColor', cssVar: '--otk-button-bg-color', idSuffix: 'gui-button-bg' },
+        { key: 'guiButtonTextColor', cssVar: '--otk-button-text-color', idSuffix: 'gui-button-text' },
+        { key: 'guiButtonBorderColor', cssVar: '--otk-button-border-color', idSuffix: 'gui-button-border' },
+        { key: 'guiButtonHoverBgColor', cssVar: '--otk-button-hover-bg-color', idSuffix: 'gui-button-hover-bg' },
+        { key: 'guiButtonActiveBgColor', cssVar: '--otk-button-active-bg-color', idSuffix: 'gui-button-active-bg' }
+    ];
+    buttonColorConfigs.forEach(config => {
+        if (settings[config.key]) {
+            document.documentElement.style.setProperty(config.cssVar, settings[config.key]);
+            const hexInput = document.getElementById(`otk-${config.idSuffix}-hex`); // All button colors are 'color' type
+            const picker = document.getElementById(`otk-${config.idSuffix}-picker`); // Assumes picker has -picker suffix, but createThemeOptionRow uses direct idSuffix
+            if (hexInput) hexInput.value = settings[config.key];
+            const pickerElement = document.getElementById(`otk-${config.idSuffix}`); // Correct ID for the color input itself
+            if (pickerElement) pickerElement.value = settings[config.key];
+        }
+    });
+
+    // Loading Screen Colors
+    // Base Hex Color for Overlay
+    if (settings.loadingOverlayBaseHexColor) {
+        document.documentElement.style.setProperty('--otk-loading-overlay-base-hex-color', settings.loadingOverlayBaseHexColor);
+        const hexInput = document.getElementById('otk-loading-overlay-base-hex-hex'); // Assuming -hex suffix for hex text part
+        const picker = document.getElementById('otk-loading-overlay-base-hex');
+        if (hexInput) hexInput.value = settings.loadingOverlayBaseHexColor;
+        if (picker) picker.value = settings.loadingOverlayBaseHexColor;
+    }
+    // Opacity
+    if (settings.loadingOverlayOpacity) {
+        document.documentElement.style.setProperty('--otk-loading-overlay-opacity', settings.loadingOverlayOpacity);
+        const inputEl = document.getElementById('otk-loading-overlay-opacity'); // ID for number input
+        if (inputEl) inputEl.value = settings.loadingOverlayOpacity;
+    }
+    // Text Color
+    if (settings.loadingTextColor) {
+        document.documentElement.style.setProperty('--otk-loading-text-color', settings.loadingTextColor);
+        const hexInput = document.getElementById('otk-loading-text-hex');
+        const picker = document.getElementById('otk-loading-text');
+        if (hexInput) hexInput.value = settings.loadingTextColor;
+        if (picker) picker.value = settings.loadingTextColor;
+    }
+    // Progress Bar BG
+    if (settings.loadingProgressBarBgColor) {
+        document.documentElement.style.setProperty('--otk-loading-progress-bar-bg-color', settings.loadingProgressBarBgColor);
+        const hexInput = document.getElementById('otk-loading-progress-bg-hex');
+        const picker = document.getElementById('otk-loading-progress-bg');
+        if (hexInput) hexInput.value = settings.loadingProgressBarBgColor;
+        if (picker) picker.value = settings.loadingProgressBarBgColor;
+    }
+    // Progress Bar Fill
+    if (settings.loadingProgressBarFillColor) {
+        document.documentElement.style.setProperty('--otk-loading-progress-bar-fill-color', settings.loadingProgressBarFillColor);
+        const hexInput = document.getElementById('otk-loading-progress-fill-hex');
+        const picker = document.getElementById('otk-loading-progress-fill');
+        if (hexInput) hexInput.value = settings.loadingProgressBarFillColor;
+        if (picker) picker.value = settings.loadingProgressBarFillColor;
+    }
+    // Progress Bar Text
+    if (settings.loadingProgressBarTextColor) {
+        document.documentElement.style.setProperty('--otk-loading-progress-bar-text-color', settings.loadingProgressBarTextColor);
+        const hexInput = document.getElementById('otk-loading-progress-text-hex');
+        const picker = document.getElementById('otk-loading-progress-text');
+        if (hexInput) hexInput.value = settings.loadingProgressBarTextColor;
+        if (picker) picker.value = settings.loadingProgressBarTextColor;
+    }
+
+    // Directly update loading screen if it exists, as its styles are set via cssText initially
+    const loadingOverlayElement = document.getElementById('otk-loading-overlay');
+    if (loadingOverlayElement) {
+        // Get base hex color from settings or CSS variable, then convert to RGB parts
+        const baseHex = settings.loadingOverlayBaseHexColor || getComputedStyle(document.documentElement).getPropertyValue('--otk-loading-overlay-base-hex-color').trim() || '#000000';
+        const rgbParts = hexToRgbParts(baseHex); // Use helper function
+        const opacity = settings.loadingOverlayOpacity || getComputedStyle(document.documentElement).getPropertyValue('--otk-loading-overlay-opacity').trim() || '0.8';
+        
+        loadingOverlayElement.style.backgroundColor = `rgba(${rgbParts}, ${opacity})`;
+        
+        // Update text color using the CSS variable (which should have been set above)
+        loadingOverlayElement.style.color = `var(--otk-loading-text-color, ${getComputedStyle(document.documentElement).getPropertyValue('--otk-loading-text-color').trim() || '#ffffff'})`;
+        
+        const progressBarContainer = document.getElementById('otk-progress-bar-container');
+        if (progressBarContainer) {
+            progressBarContainer.style.backgroundColor = `var(--otk-loading-progress-bar-bg-color, ${getComputedStyle(document.documentElement).getPropertyValue('--otk-loading-progress-bar-bg-color').trim() || '#333333'})`;
+        }
+        const progressBar = document.getElementById('otk-progress-bar');
+        if (progressBar) {
+            progressBar.style.backgroundColor = `var(--otk-loading-progress-bar-fill-color, ${getComputedStyle(document.documentElement).getPropertyValue('--otk-loading-progress-bar-fill-color').trim() || '#4CAF50'})`;
+            progressBar.style.color = `var(--otk-loading-progress-bar-text-color, ${getComputedStyle(document.documentElement).getPropertyValue('--otk-loading-progress-bar-text-color').trim() || '#ffffff'})`;
+        }
+    }
 }
 
 
@@ -3788,6 +4053,18 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Titles Font:", storageKey: 'guiThreadListTitleColor', cssVariable: '--otk-gui-threadlist-title-color', defaultValue: '#e0e0e0', inputType: 'color', idSuffix: 'threadlist-title' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Times Font:", storageKey: 'guiThreadListTimeColor', cssVariable: '--otk-gui-threadlist-time-color', defaultValue: '#aaa', inputType: 'color', idSuffix: 'threadlist-time' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Stats Font:", storageKey: 'actualStatsTextColor', cssVariable: '--otk-stats-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'actual-stats-text' }));
+    
+    // Sub-section for GUI Buttons
+    const guiButtonsSubHeading = document.createElement('h6');
+    guiButtonsSubHeading.textContent = "GUI Buttons";
+    guiButtonsSubHeading.style.cssText = "margin-top: 15px; margin-bottom: 5px; color: #cccccc; font-size: 12px; font-weight: bold;"; // Simple sub-heading style
+    themeOptionsContainer.appendChild(guiButtonsSubHeading);
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Background:", storageKey: 'guiButtonBgColor', cssVariable: '--otk-button-bg-color', defaultValue: '#555555', inputType: 'color', idSuffix: 'gui-button-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Text:", storageKey: 'guiButtonTextColor', cssVariable: '--otk-button-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'gui-button-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Border:", storageKey: 'guiButtonBorderColor', cssVariable: '--otk-button-border-color', defaultValue: '#777777', inputType: 'color', idSuffix: 'gui-button-border' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Hover BG:", storageKey: 'guiButtonHoverBgColor', cssVariable: '--otk-button-hover-bg-color', defaultValue: '#666666', inputType: 'color', idSuffix: 'gui-button-hover-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Active BG:", storageKey: 'guiButtonActiveBgColor', cssVariable: '--otk-button-active-bg-color', defaultValue: '#444444', inputType: 'color', idSuffix: 'gui-button-active-bg' }));
+    
     themeOptionsContainer.appendChild(createDivider());
 
     // --- Viewer Section ---
@@ -3822,6 +4099,23 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createSectionHeading('Options Panel'));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Cog Icon Color:", storageKey: 'cogIconColor', cssVariable: '--otk-cog-icon-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'cog-icon' })); // New option
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Panel Font:", storageKey: 'optionsTextColor', cssVariable: '--otk-options-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'options-text' }));
+    themeOptionsContainer.appendChild(createDivider());
+
+    // --- Loading Screen Sub-Section (within Theme) ---
+    const loadingScreenSubHeading = document.createElement('h6');
+    loadingScreenSubHeading.textContent = "Loading Screen";
+    loadingScreenSubHeading.style.cssText = "margin-top: 15px; margin-bottom: 5px; color: #cccccc; font-size: 12px; font-weight: bold;";
+    themeOptionsContainer.appendChild(loadingScreenSubHeading);
+
+    // Create a nested container for loading screen options for clarity if needed, or add directly
+    // For simplicity, adding directly to themeOptionsContainer under this new subheading.
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Overlay Base Color:", storageKey: 'loadingOverlayBaseHexColor', cssVariable: '--otk-loading-overlay-base-hex-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'loading-overlay-base-hex' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Overlay Opacity:", storageKey: 'loadingOverlayOpacity', cssVariable: '--otk-loading-overlay-opacity', defaultValue: '0.8', inputType: 'number', min:0.0, max:1.0, step:0.05, idSuffix: 'loading-overlay-opacity' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Text Color:", storageKey: 'loadingTextColor', cssVariable: '--otk-loading-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'loading-text' }));
+    
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Progress Bar BG:", storageKey: 'loadingProgressBarBgColor', cssVariable: '--otk-loading-progress-bar-bg-color', defaultValue: '#333333', inputType: 'color', idSuffix: 'loading-progress-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Progress Bar Fill:", storageKey: 'loadingProgressBarFillColor', cssVariable: '--otk-loading-progress-bar-fill-color', defaultValue: '#4CAF50', inputType: 'color', idSuffix: 'loading-progress-fill' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Progress Bar Text:", storageKey: 'loadingProgressBarTextColor', cssVariable: '--otk-loading-progress-bar-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'loading-progress-text' }));
 
     // --- Custom Themes Section ---
     themeOptionsContainer.appendChild(createDivider());
@@ -4108,7 +4402,22 @@ function setupOptionsWindow() {
             { storageKey: 'cogIconColor', cssVariable: '--otk-cog-icon-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'cog-icon' },
             { storageKey: 'optionsTextColor', cssVariable: '--otk-options-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'options-text' },
             { storageKey: 'newMessagesDividerColor', cssVariable: '--otk-new-messages-divider-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-divider' },
-            { storageKey: 'newMessagesFontColor', cssVariable: '--otk-new-messages-font-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-font' }
+            { storageKey: 'newMessagesFontColor', cssVariable: '--otk-new-messages-font-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-font' },
+
+            // GUI Button Colors
+            { storageKey: 'guiButtonBgColor', cssVariable: '--otk-button-bg-color', defaultValue: '#555555', inputType: 'color', idSuffix: 'gui-button-bg' },
+            { storageKey: 'guiButtonTextColor', cssVariable: '--otk-button-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'gui-button-text' },
+            { storageKey: 'guiButtonBorderColor', cssVariable: '--otk-button-border-color', defaultValue: '#777777', inputType: 'color', idSuffix: 'gui-button-border' },
+            { storageKey: 'guiButtonHoverBgColor', cssVariable: '--otk-button-hover-bg-color', defaultValue: '#666666', inputType: 'color', idSuffix: 'gui-button-hover-bg' },
+            { storageKey: 'guiButtonActiveBgColor', cssVariable: '--otk-button-active-bg-color', defaultValue: '#444444', inputType: 'color', idSuffix: 'gui-button-active-bg' },
+
+            // Loading Screen Colors
+            { storageKey: 'loadingOverlayBaseHexColor', cssVariable: '--otk-loading-overlay-base-hex-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'loading-overlay-base-hex' },
+            { storageKey: 'loadingOverlayOpacity', cssVariable: '--otk-loading-overlay-opacity', defaultValue: '0.8', inputType: 'number', unit: null, min:0.0, max:1.0, step:0.05, idSuffix: 'loading-overlay-opacity' },
+            { storageKey: 'loadingTextColor', cssVariable: '--otk-loading-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'loading-text' },
+            { storageKey: 'loadingProgressBarBgColor', cssVariable: '--otk-loading-progress-bar-bg-color', defaultValue: '#333333', inputType: 'color', idSuffix: 'loading-progress-bg' },
+            { storageKey: 'loadingProgressBarFillColor', cssVariable: '--otk-loading-progress-bar-fill-color', defaultValue: '#4CAF50', inputType: 'color', idSuffix: 'loading-progress-fill' },
+            { storageKey: 'loadingProgressBarTextColor', cssVariable: '--otk-loading-progress-bar-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'loading-progress-text' }
         ];
     }
 
@@ -4242,7 +4551,56 @@ async function main() {
             --otk-viewer-quote2plus-header-border-color: #2a2a2a; /* Default for Depth 2+ message header underline */
             --otk-new-messages-divider-color: #FFD700; /* Default for new message separator line */
             --otk-new-messages-font-color: #FFD700; /* Default for new message separator text */
+
+            /* GUI Button Colors */
+            --otk-button-bg-color: #555;
+            --otk-button-text-color: white;
+            --otk-button-border-color: #777;
+            --otk-button-hover-bg-color: #666;
+            --otk-button-active-bg-color: #444444; /* Ensured hex */
+
+            /* Loading Screen Colors */
+            --otk-loading-overlay-base-hex-color: #000000; /* Hex base for overlay */
+            --otk-loading-overlay-opacity: 0.8;
+            --otk-loading-text-color: #ffffff; /* Hex for white */
+            --otk-loading-progress-bar-bg-color: #333333; /* Hex for dark grey */
+            --otk-loading-progress-bar-fill-color: #4CAF50; /* Already hex */
+            --otk-loading-progress-bar-text-color: #ffffff; /* Hex for white */
             /* Add more variables here as they are identified */
+        }
+
+        /* Refined Chrome Scrollbar Styling for Overlay Effect */
+        #otk-messages-container::-webkit-scrollbar {
+            width: 8px; /* Thinner for a more subtle overlay appearance */
+        }
+
+        #otk-messages-container::-webkit-scrollbar-track {
+            background: transparent; /* Make track transparent for overlay effect */
+        }
+
+        #otk-messages-container::-webkit-scrollbar-thumb {
+            background-color: var(--otk-stats-text-color, #888); /* Use a theme variable, fallback to #888 */
+            border-radius: 4px; /* Slightly smaller radius for a thinner bar */
+            /* The border creates a visual separation from content, enhancing overlay feel */
+            border: 2px solid transparent; /* Keep border transparent initially */
+            background-clip: padding-box; /* Ensures background doesn't go under the border */
+        }
+
+        #otk-messages-container::-webkit-scrollbar-thumb:hover {
+            background-color: #aaa; /* Lighter on hover for better visibility */
+            border-color: var(--otk-viewer-bg-color, #181818); /* Show border matching background on hover */
+        }
+        /* Make scrollbar visible only when scrolling or hovering over the container */
+        /* This is harder to achieve with pure CSS for ::-webkit-scrollbar if not natively supported by OS/Browser settings */
+        /* The transparent track and subtle thumb provide a good approximation. */
+        /* True auto-hide on non-interaction often requires JavaScript or browser/OS support for overlay scrollbars. */
+
+        /* GUI Button States */
+        .otk-button--hover {
+            background-color: var(--otk-button-hover-bg-color) !important;
+        }
+        .otk-button--active {
+            background-color: var(--otk-button-active-bg-color) !important;
         }
 
         .${ANCHORED_MESSAGE_CLASS} {
