@@ -1993,46 +1993,55 @@ messageDiv.style.cssText = `
 
                 const img = document.createElement('img');
                 img.dataset.filehash = filehash;
-                img.dataset.thumbSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}s.jpg`;
+                // img.dataset.thumbSrc is now set asynchronously
                 img.dataset.thumbWidth = message.attachment.tn_w;
                 img.dataset.thumbHeight = message.attachment.tn_h;
-                img.dataset.isThumbnail = isFirstInstance ? 'false' : 'true';
+                img.dataset.isThumbnail = isFirstInstance ? 'false' : 'true'; // Determines initial display mode
                 img.style.cursor = 'pointer';
-                img.style.display = 'block'; // Ensure it takes block space
+                img.style.display = 'block';
                 img.style.borderRadius = '3px';
 
+                // Fallback web URLs
+                const webFullSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
+                const webThumbSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}s.jpg`;
 
-                const setupInitialImageState = (dataUrlOrFallback) => { // Parameter is now dataUrl or a fallback web URL
-                    img.dataset.fullSrc = dataUrlOrFallback; // Store the dataURL or the web URL
+                img.dataset.fullSrc = webFullSrc; // Default to web URL, updated if local found
+                img.dataset.thumbSrc = webThumbSrc; // Default to web URL, updated if local found
 
+                const setImageProperties = () => {
                     if (img.dataset.isThumbnail === 'true') {
-                        img.src = img.dataset.thumbSrc;
+                        img.src = img.dataset.thumbSrc; // This will be local dataURL or web URL
                         img.style.width = img.dataset.thumbWidth + 'px';
                         img.style.height = img.dataset.thumbHeight + 'px';
-                        img.style.maxWidth = ''; // Clear max constraints for thumbnail
+                        img.style.maxWidth = '';
                         img.style.maxHeight = '';
                     } else {
-                        img.src = img.dataset.fullSrc;
+                        img.src = img.dataset.fullSrc; // This will be local dataURL or web URL
                         img.style.maxWidth = '100%';
-                        img.style.maxHeight = '400px'; // Existing constraint for full-size
-                        img.style.width = 'auto'; // Let aspect ratio determine width within constraints
-                        img.style.height = 'auto';// Let aspect ratio determine height within constraints
+                        img.style.maxHeight = '400px';
+                        img.style.width = 'auto';
+                        img.style.height = 'auto';
                     }
-                    uniqueImageViewerHashes.add(filehash); // Add to stats regardless of initial display type
+                    // Add to uniqueImageViewerHashes only once, e.g., after full image processing promise resolves.
+                    // Or here, if we assume it's a unique image being processed.
+                    // Let's keep it tied to the full image processing.
                 };
 
+                // Initially set properties based on web URLs or if one of them is already a data URL (e.g. from a previous step)
+                setImageProperties();
+
+
                 img.addEventListener('click', () => {
-                    // consoleLog(`Image clicked: msgId=${message.id}, filehash=${filehash}, isThumbnail=${img.dataset.isThumbnail}, fullSrc=${img.dataset.fullSrc}`); // Logging removed
                     const currentlyThumbnail = img.dataset.isThumbnail === 'true';
                     if (currentlyThumbnail) { // Toggle to full
-                        img.src = img.dataset.fullSrc;
+                        img.src = img.dataset.fullSrc; // Uses local dataURL or web URL
                         img.style.maxWidth = '100%';
                         img.style.maxHeight = '400px';
                         img.style.width = 'auto';
                         img.style.height = 'auto';
                         img.dataset.isThumbnail = 'false';
                     } else { // Toggle to thumbnail
-                        img.src = img.dataset.thumbSrc;
+                        img.src = img.dataset.thumbSrc; // Uses local dataURL or web URL
                         img.style.width = img.dataset.thumbWidth + 'px';
                         img.style.height = img.dataset.thumbHeight + 'px';
                         img.style.maxWidth = '';
@@ -2041,6 +2050,7 @@ messageDiv.style.cssText = `
                     }
                 });
 
+                // Promise for loading full-size image from IDB
                 if (message.attachment.localStoreId && otkMediaDB) {
                     mediaLoadPromises.push(new Promise((resolveMedia) => {
                         const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
@@ -2048,33 +2058,72 @@ messageDiv.style.cssText = `
                         const request = store.get(message.attachment.localStoreId);
                         request.onsuccess = (event) => {
                             const storedItem = event.target.result;
-                            if (storedItem && storedItem.blob) {
+                            if (storedItem && storedItem.blob && !storedItem.isThumbnail) {
                                 blobToDataURL(storedItem.blob)
                                     .then(dataURL => {
-                                        setupInitialImageState(dataURL);
+                                        img.dataset.fullSrc = dataURL; // Update with local dataURL
+                                        if (img.dataset.isThumbnail === 'false') { // If currently showing full, update src
+                                            img.src = dataURL;
+                                        }
+                                        uniqueImageViewerHashes.add(filehash); // Add to stats once full image is confirmed/processed
                                         resolveMedia();
                                     })
                                     .catch(err => {
-                                        consoleError(`Error converting blob to Data URL for ${message.attachment.localStoreId}:`, err);
-                                        setupInitialImageState(null); // Fallback to web URL
-                                        resolveMedia();
+                                        consoleError(`Error converting full image blob to Data URL for ${message.attachment.localStoreId}:`, err);
+                                        uniqueImageViewerHashes.add(filehash); // Still count it for stats even if fallback to web
+                                        resolveMedia(); // Resolve even on error, using web fallback
                                     });
                             } else {
-                                consoleWarn(`Blob not found in IDB for ${message.attachment.localStoreId}. Using web URLs.`);
-                                setupInitialImageState(null); // Will use web URL as fallback
+                                if (storedItem && storedItem.isThumbnail) consoleWarn(`Expected full image but found thumb in IDB for ${message.attachment.localStoreId}`);
+                                else if (!storedItem) consoleWarn(`Full image blob not found in IDB for ${message.attachment.localStoreId}. Using web URL.`);
+                                uniqueImageViewerHashes.add(filehash); // Still count it
                                 resolveMedia();
                             }
                         };
                         request.onerror = (event) => {
-                            consoleError(`Error fetching media ${message.attachment.localStoreId} from IDB:`, event.target.error);
-                            setupInitialImageState(null); // Use web URL on error
+                            consoleError(`Error fetching full image ${message.attachment.localStoreId} from IDB:`, event.target.error);
+                            uniqueImageViewerHashes.add(filehash); // Still count it
                             resolveMedia();
                         };
                     }));
                 } else {
-                    // No local store ID or DB unavailable, setup with web URLs directly
-                    setupInitialImageState(null);
+                     uniqueImageViewerHashes.add(filehash); // No local full image, count based on web presence
                 }
+
+                // Promise for loading thumbnail image from IDB
+                if (message.attachment.localThumbStoreId && otkMediaDB) {
+                    mediaLoadPromises.push(new Promise((resolveMedia) => {
+                        const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
+                        const store = transaction.objectStore('mediaStore');
+                        const request = store.get(message.attachment.localThumbStoreId);
+                        request.onsuccess = (event) => {
+                            const storedItem = event.target.result;
+                            if (storedItem && storedItem.blob && storedItem.isThumbnail) {
+                                blobToDataURL(storedItem.blob)
+                                    .then(dataURL => {
+                                        img.dataset.thumbSrc = dataURL; // Update with local dataURL for thumbnail
+                                        if (img.dataset.isThumbnail === 'true') { // If currently showing thumb, update src
+                                            img.src = dataURL;
+                                        }
+                                        resolveMedia();
+                                    })
+                                    .catch(err => {
+                                        consoleError(`Error converting thumbnail blob to Data URL for ${message.attachment.localThumbStoreId}:`, err);
+                                        resolveMedia(); // Resolve even on error, using web fallback for thumb
+                                    });
+                            } else {
+                                if (storedItem && !storedItem.isThumbnail) consoleWarn(`Expected thumbnail but found full image in IDB for ${message.attachment.localThumbStoreId}`);
+                                else if (!storedItem) consoleWarn(`Thumbnail blob not found in IDB for ${message.attachment.localThumbStoreId}. Using web URL.`);
+                                resolveMedia();
+                            }
+                        };
+                        request.onerror = (event) => {
+                            consoleError(`Error fetching thumbnail ${message.attachment.localThumbStoreId} from IDB:`, event.target.error);
+                            resolveMedia();
+                        };
+                    }));
+                }
+                // If no localThumbStoreId, it defaults to webThumbSrc already set.
                 attachmentDiv.appendChild(img);
 
             } else if (['.webm', '.mp4'].includes(extLower)) {
@@ -2438,41 +2487,102 @@ messageDiv.style.cssText = `
                                         originalThreadId: threadId,
                                         filename: post.filename,
                                         ext: post.ext, // Store ext for easier type identification for stats
-                                        timestamp: Date.now()
+                                        timestamp: Date.now(),
+                                        isThumbnail: false // Mark that this is not a thumbnail
                                     };
 
                                     const putRequest = mediaStore.put(itemToStore);
                                     await new Promise((resolvePut, rejectPut) => {
                                         putRequest.onsuccess = () => {
-                                            message.attachment.localStoreId = filehash_db_key; // localStoreId still refers to the value of the key
-                                            consoleLog(`Stored media with key ${filehash_db_key} (post ${post.no}) in IndexedDB.`);
+                                            message.attachment.localStoreId = filehash_db_key;
+                                            consoleLog(`Stored full media with key ${filehash_db_key} (post ${post.no}) in IndexedDB.`);
 
-                                            // Update local media counts
-                                            const ext = post.ext.toLowerCase();
-                                            if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
-                                                fetchedImagesInThread++; // Count all images encountered
+                                            const extLower = post.ext.toLowerCase();
+                                            if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) {
+                                                // This is where newlyStoredImagesInThread was incremented.
+                                                // It will now be incremented after the trueFetchedImages loop.
+                                                // fetchedImagesInThread will also be handled later.
                                                 let currentImageCount = parseInt(localStorage.getItem(LOCAL_IMAGE_COUNT_KEY) || '0');
                                                 localStorage.setItem(LOCAL_IMAGE_COUNT_KEY, (currentImageCount + 1).toString());
-                                                newlyStoredImagesInThread++; // Increment if successfully stored
-                                            } else if (['.webm', '.mp4'].includes(ext)) {
-                                                fetchedVideosInThread++; // Count all videos encountered
+                                                // newlyStoredImagesInThread++; // This specific increment is moved
+                                            } else if (['.webm', '.mp4'].includes(extLower)) {
+                                                // fetchedVideosInThread handled later
                                                 let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
                                                 localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
-                                                // newlyStoredVideosInThread would be incremented here if they were stored
                                             }
-                                            updateDisplayedStatistics(); // Refresh stats display
-
+                                            updateDisplayedStatistics();
                                             resolvePut();
                                         };
                                         putRequest.onerror = (putEvent) => {
-                                            consoleError(`IndexedDB 'put' error for key ${filehash_db_key} (post ${post.no}):`, putEvent.target.error);
+                                            consoleError(`IndexedDB 'put' error for full media key ${filehash_db_key} (post ${post.no}):`, putEvent.target.error);
                                             rejectPut(putEvent.target.error);
                                         };
                                     });
                                 } else {
-                                    consoleWarn(`Failed to download media for post ${post.no} (DB key: ${filehash_db_key}). Status: ${mediaResponse.status}`);
+                                    consoleWarn(`Failed to download full media for post ${post.no} (DB key: ${filehash_db_key}). Status: ${mediaResponse.status}`);
                                 }
                             }
+
+                            // --- Thumbnail Fetching and Storing (if image) ---
+                            const extLower = post.ext.toLowerCase();
+                            if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) { // Only try to fetch thumbs for image types
+                                const thumbnail_filehash_db_key = filehash_db_key + '_thumb';
+                                message.attachment.localThumbStoreId = null; // Initialize
+
+                                const thumbDbRequest = store.get(thumbnail_filehash_db_key);
+                                const thumbDbResult = await new Promise((resolve, reject) => {
+                                    thumbDbRequest.onsuccess = () => resolve(thumbDbRequest.result);
+                                    thumbDbRequest.onerror = (dbEvent) => {
+                                        consoleError(`IndexedDB 'get' error for thumbnail key ${thumbnail_filehash_db_key} (post ${post.no}):`, dbEvent.target.error);
+                                        reject(dbEvent.target.error);
+                                    };
+                                });
+
+                                if (thumbDbResult) {
+                                    consoleLog(`Thumbnail with key ${thumbnail_filehash_db_key} (post ${post.no}) already in IndexedDB.`);
+                                    message.attachment.localThumbStoreId = thumbnail_filehash_db_key;
+                                } else {
+                                    const thumbUrl = `https://i.4cdn.org/${opPost.board || 'b'}/${post.tim}s.jpg`;
+                                    consoleLog(`Downloading thumbnail for post ${post.no} (DB key: ${thumbnail_filehash_db_key}) from ${thumbUrl}`);
+                                    try {
+                                        const thumbResponse = await fetch(thumbUrl);
+                                        if (thumbResponse.ok) {
+                                            const thumbBlob = await thumbResponse.blob();
+                                            const thumbStoreTransaction = otkMediaDB.transaction(['mediaStore'], 'readwrite'); // New transaction
+                                            const thumbMediaStore = thumbStoreTransaction.objectStore('mediaStore');
+                                            const thumbItemToStore = {
+                                                filehash: thumbnail_filehash_db_key,
+                                                blob: thumbBlob,
+                                                originalThreadId: threadId,
+                                                filename: `${post.filename}_thumb.jpg`, // Adjust filename
+                                                ext: '.jpg', // Thumbnails are typically jpg
+                                                timestamp: Date.now(),
+                                                isThumbnail: true // Mark that this IS a thumbnail
+                                            };
+                                            const thumbPutRequest = thumbMediaStore.put(thumbItemToStore);
+                                            await new Promise((resolvePut, rejectPut) => {
+                                                thumbPutRequest.onsuccess = () => {
+                                                    message.attachment.localThumbStoreId = thumbnail_filehash_db_key;
+                                                    consoleLog(`Stored thumbnail with key ${thumbnail_filehash_db_key} (post ${post.no}) in IndexedDB.`);
+                                                    // Do NOT increment LOCAL_IMAGE_COUNT_KEY or newlyStoredImagesInThread for thumbnails here
+                                                    // to avoid double counting if the main image is also counted.
+                                                    resolvePut();
+                                                };
+                                                thumbPutRequest.onerror = (putEvent) => {
+                                                    consoleError(`IndexedDB 'put' error for thumbnail key ${thumbnail_filehash_db_key} (post ${post.no}):`, putEvent.target.error);
+                                                    rejectPut(putEvent.target.error);
+                                                };
+                                            });
+                                        } else {
+                                            consoleWarn(`Failed to download thumbnail for post ${post.no} (DB key: ${thumbnail_filehash_db_key}). Status: ${thumbResponse.status}`);
+                                        }
+                                    } catch (thumbFetchError) {
+                                        consoleError(`Error fetching thumbnail for post ${post.no} (DB key: ${thumbnail_filehash_db_key}):`, thumbFetchError);
+                                    }
+                                }
+                            }
+                            // --- End Thumbnail Fetching ---
+
                         } catch (dbError) {
                             consoleError(`General IndexedDB error for post ${post.no} (DB key: ${filehash_db_key}):`, dbError);
                         }
@@ -2536,7 +2646,9 @@ messageDiv.style.cssText = `
         }
     }
 
-    async function backgroundRefreshThreadsAndMessages() {
+    async function backgroundRefreshThreadsAndMessages(options = {}) { // Added options parameter
+        const { skipViewerUpdate = false } = options; // Destructure with default
+
         if (isManualRefreshInProgress) {
             consoleLog('[BG] Manual refresh in progress, skipping background refresh.');
             return;
@@ -2555,9 +2667,9 @@ messageDiv.style.cssText = `
             activeThreads = activeThreads.filter(threadId => {
                 const isLive = foundIds.has(Number(threadId));
                 if (!isLive) {
-                    consoleLog(`[BG] Removing thread ${threadId} (not in catalog).`);
-                    delete messagesByThreadId[threadId];
-                    delete threadColors[threadId];
+                    consoleLog(`[BG] Thread ${threadId} no longer in catalog (now considered 'dead' for fetching purposes). Messages will be retained.`);
+                    // delete messagesByThreadId[threadId]; // Retain messages
+                    // delete threadColors[threadId]; // Handle threadColors in a later step
                 }
                 return isLive;
             });
@@ -2641,12 +2753,20 @@ messageDiv.style.cssText = `
             updateDisplayedStatistics();
             consoleLog('[BG] Background refresh complete.');
 
+            // No viewer updates from background refresh if skipViewerUpdate is true (it defaults to false)
+            // This function doesn't directly update the viewer itself, but triggers events or relies on other calls.
+            // The main concern is if it were to call renderMessagesInViewer or appendNewMessagesToViewer.
+            // Currently, it does not, so skipViewerUpdate has no direct effect here yet unless other logic is added.
+            // This is more of a placeholder if background tasks were to interact with the viewer DOM.
+
         } catch (error) {
             consoleError('[BG] Error during background refresh:', error.message, error.stack);
         }
     }
 
-    async function refreshThreadsAndMessages() { // Manual Refresh
+    async function refreshThreadsAndMessages(options = {}) { // Manual Refresh / Called by Clear
+        const { skipViewerUpdate = false } = options; // Destructure with default
+
         consoleLog('[Manual] Refreshing threads and messages...');
         isManualRefreshInProgress = true;
         showLoadingScreen("Initializing refresh..."); // Initial message
@@ -2665,9 +2785,9 @@ messageDiv.style.cssText = `
             activeThreads = activeThreads.filter(threadId => {
                 const isLive = foundIds.has(Number(threadId));
                 if (!isLive) {
-                    consoleLog(`[Manual] Removing thread ${threadId} (not in catalog).`);
-                    delete messagesByThreadId[threadId];
-                    delete threadColors[threadId];
+                    consoleLog(`[Manual] Thread ${threadId} no longer in catalog (now considered 'dead' for fetching purposes). Messages will be retained.`);
+                    // delete messagesByThreadId[threadId]; // Retain messages
+                    // delete threadColors[threadId]; // Handle threadColors in a later step
                 }
                 return isLive;
             });
@@ -2799,22 +2919,16 @@ messageDiv.style.cssText = `
 
             const newMessagesToAppend = allFetchedMessagesThisCycle.filter(m => !renderedMessageIdsInViewer.has(m.id));
 
-            if (viewerIsOpen && newMessagesToAppend.length > 0) {
-                consoleLog(`[Manual Refresh] Viewer is open, appending ${newMessagesToAppend.length} new messages.`);
-                // Call simplified: only pass newMessagesToAppend
-                await appendNewMessagesToViewer(newMessagesToAppend);
-            } else if (viewerIsOpen) {
-                // Viewer is open but no new messages, or an issue occurred in filtering.
-                // Could be a full re-render or do nothing if content is identical.
-                // For safety, a full re-render if something changed overall but no *new* messages.
-                // However, if newMessagesToAppend is 0, implies all messages are already rendered.
-                // Let's assume if newMessagesToAppend is 0, no DOM change is needed unless other state changed.
-                // The original logic was a full re-render:
-                consoleLog('[Manual Refresh] Viewer is open, but no new messages to append. Re-rendering for consistency (or doing nothing if truly no changes).');
-                // To avoid unnecessary full re-renders if only existing messages were updated (which is rare for 4chan),
-                // we might only re-render if the *set* of messages changed, not just content.
-                // For now, let's stick to re-rendering if no append, to match original behavior branch.
-                await renderMessagesInViewer({ isToggleOpen: false }); // Ensures scroll to bottom if no scroll preservation needed.
+            if (!skipViewerUpdate) { // Only perform viewer updates if not skipped
+                if (viewerIsOpen && newMessagesToAppend.length > 0) {
+                    consoleLog(`[Manual Refresh] Viewer is open, appending ${newMessagesToAppend.length} new messages.`);
+                    await appendNewMessagesToViewer(newMessagesToAppend);
+                } else if (viewerIsOpen) {
+                    consoleLog('[Manual Refresh] Viewer is open, but no new messages to append (or update skipped). Re-rendering for consistency.');
+                    await renderMessagesInViewer({ isToggleOpen: false });
+                }
+            } else {
+                consoleLog('[Refresh] Viewer update skipped as requested by options.');
             }
             // If viewer is not open, no specific viewer update action here, it will populate on next open.
 
@@ -2832,6 +2946,22 @@ messageDiv.style.cssText = `
 
     async function clearAndRefresh() {
         consoleLog('[Clear] Clear and Refresh initiated...');
+        const viewerWasOpen = otkViewer && otkViewer.style.display === 'block';
+
+        // Clear viewer content and related state immediately if viewer was open
+        if (viewerWasOpen) {
+            consoleLog('[Clear] Viewer was open, clearing its content and state immediately.');
+            otkViewer.innerHTML = ''; // Clear existing viewer DOM
+            renderedMessageIdsInViewer.clear(); // Clear the set of rendered message IDs
+            uniqueImageViewerHashes.clear();
+            viewerTopLevelAttachedVideoHashes.clear();
+            viewerTopLevelEmbedIds.clear();
+            renderedFullSizeImageHashes.clear();
+            viewerActiveImageCount = null; // Reset viewer-specific counts
+            viewerActiveVideoCount = null;
+            lastViewerScrollTop = 0; // Reset scroll position memory
+        }
+
         isManualRefreshInProgress = true;
         try {
             activeThreads = [];
@@ -2841,18 +2971,11 @@ messageDiv.style.cssText = `
             localStorage.removeItem(MESSAGES_KEY);
             localStorage.removeItem(COLORS_KEY);
             localStorage.removeItem(DROPPED_THREADS_KEY);
-            localStorage.removeItem(SEEN_EMBED_URL_IDS_KEY); // Clear seen embed IDs
-            // localStorage.removeItem(THEME_SETTINGS_KEY); // Active theme settings are cleared
-            // localStorage.removeItem(CUSTOM_THEMES_KEY); // CUSTOM THEMES ARE PRESERVED
-            localStorage.setItem(LOCAL_IMAGE_COUNT_KEY, '0'); // Reset image count
-            localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, '0'); // Reset video count
-            // Note: THEME_SETTINGS_KEY (active theme) will be effectively reset when applyThemeSettings is called
-            // without pre-existing settings, or if we explicitly clear it.
-            // For a true "Restart" regarding active theme, THEME_SETTINGS_KEY should be cleared.
-            // Custom themes (CUSTOM_THEMES_KEY) must be preserved.
-            localStorage.removeItem(THEME_SETTINGS_KEY); // Clear current active theme settings
+            localStorage.removeItem(SEEN_EMBED_URL_IDS_KEY);
+            localStorage.setItem(LOCAL_IMAGE_COUNT_KEY, '0');
+            localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, '0');
+            localStorage.removeItem(THEME_SETTINGS_KEY);
             consoleLog('[Clear] LocalStorage (threads, messages, seen embeds, media counts, ACTIVE theme) cleared/reset. CUSTOM THEMES PRESERVED.');
-
 
             if (otkMediaDB) {
                 consoleLog('[Clear] Clearing IndexedDB mediaStore...');
@@ -2873,20 +2996,23 @@ messageDiv.style.cssText = `
                 consoleWarn('[Clear] otkMediaDB not initialized, skipping IndexedDB clear.');
             }
 
-            consoleLog('[Clear] Calling refreshThreadsAndMessages to repopulate...');
-            await refreshThreadsAndMessages();
+            consoleLog('[Clear] Calling refreshThreadsAndMessages to repopulate data (viewer updates will be skipped by refresh function)...');
+            await refreshThreadsAndMessages({ skipViewerUpdate: true });
 
-            consoleLog('[Clear] Dispatching otkClearViewerDisplay event.');
-            window.dispatchEvent(new CustomEvent('otkClearViewerDisplay'));
-            consoleLog('[Clear] Clear and Refresh complete.');
+            // Explicitly re-render the viewer if it was open, using the fresh data.
+            if (viewerWasOpen) {
+                consoleLog('[Clear] Re-rendering viewer with fresh data after clear.');
+                await renderMessagesInViewer({ isToggleOpen: false }); // isToggleOpen: false typically scrolls to bottom or default.
+            }
+            // window.dispatchEvent(new CustomEvent('otkClearViewerDisplay')); // Removed as direct render is now handled.
+            consoleLog('[Clear] Clear and Refresh data processing complete.');
         } catch (error) {
             consoleError('[Clear] Error during clear and refresh:', error);
         } finally {
             isManualRefreshInProgress = false;
             consoleLog('[Clear] Manual refresh flag reset.');
-            // Re-render and update stats after clearing everything and initial fetch
-            renderThreadList();
-            updateDisplayedStatistics();
+            renderThreadList(); // Update GUI bar with (now minimal) live threads
+            updateDisplayedStatistics(); // Update stats based on cleared and re-fetched data
         }
     }
 
@@ -3215,7 +3341,8 @@ messageDiv.style.cssText = `
             }
             const refreshIntervalMs = frequencySeconds * 1000;
 
-            backgroundRefreshIntervalId = setInterval(backgroundRefreshThreadsAndMessages, refreshIntervalMs);
+            // Pass default options to backgroundRefreshThreadsAndMessages
+            backgroundRefreshIntervalId = setInterval(() => backgroundRefreshThreadsAndMessages(), refreshIntervalMs);
             consoleLog(`Background refresh scheduled every ${frequencySeconds} seconds.`);
         } else {
             consoleLog('Background refresh interval already active (will use new frequency on next auto-restart if changed).');
