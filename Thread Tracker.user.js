@@ -5158,6 +5158,24 @@ function setupOptionsWindow() {
     }
 
     closeButton.addEventListener('click', () => {
+        // Reversion logic for theme preview
+        if (prePreviewSettings) {
+            consoleLog("[OptionsClose] Reverting to pre-preview settings as options window is closing.");
+            localStorage.setItem(THEME_SETTINGS_KEY, JSON.stringify(prePreviewSettings));
+            applyThemeSettings(); // Apply the restored settings
+
+            prePreviewSettings = null; // Clear the stored pre-preview settings
+            currentlyPreviewingThemeName = null; // Clear the currently previewing theme name
+
+            // Reset dropdown to "Active Settings"
+            const dropdown = document.getElementById('otk-custom-themes-dropdown');
+            if (dropdown) {
+                dropdown.value = "__REVERT__";
+            }
+        } else {
+            consoleLog("[OptionsClose] No active preview to revert. Closing options window.");
+        }
+
         optionsWindow.style.display = 'none';
         consoleLog("Options window closed.");
     });
