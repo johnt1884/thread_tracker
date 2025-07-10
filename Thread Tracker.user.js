@@ -3937,6 +3937,32 @@ function handleIntersection(entries, observerInstance) {
 // --- Theme Settings Persistence ---
 const THEME_SETTINGS_KEY = 'otkThemeSettings';
 
+function forceViewerRerenderAfterThemeChange() {
+    if (otkViewer && otkViewer.style.display === 'block') {
+        renderedMessageIdsInViewer.clear();
+        otkViewer.innerHTML = ''; // Clear the viewer content
+
+        // Ensure the correct layout class is applied before rendering
+        // This might be redundant if updateViewerLayoutMode also handles it,
+        // but explicit application here ensures the class is set based on the current theme state.
+        const currentLayoutToggle = localStorage.getItem('otkMessageLayoutStyle') || 'default';
+        if (currentLayoutToggle === 'new_design') {
+            otkViewer.classList.add('otk-message-layout-newdesign');
+            otkViewer.classList.remove('otk-message-layout-default');
+        } else {
+            otkViewer.classList.add('otk-message-layout-default');
+            otkViewer.classList.remove('otk-message-layout-newdesign');
+        }
+        // updateViewerLayoutMode(); // This function seems to be missing or was from a different context.
+                                 // If it's intended to re-apply layout classes based on theme,
+                                 // the logic above handles it. If it does more, it needs to be defined.
+                                 // For now, assuming the direct class manipulation is sufficient.
+
+        renderMessagesInViewer({ isToggleOpen: true }); // Re-render all messages
+        consoleLog("Viewer force re-rendered after theme change.");
+    }
+}
+
 function saveThemeSetting(key, value) {
     let settings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
     if (value === null || value === undefined) {
@@ -4240,6 +4266,10 @@ function applyThemeSettings() {
             progressBar.style.color = `var(--otk-loading-progress-bar-text-color, ${getComputedStyle(document.documentElement).getPropertyValue('--otk-loading-progress-bar-text-color').trim() || '#ffffff'})`;
         }
     }
+
+    // After all theme settings are applied, force the viewer to re-render
+    // This function internally checks if the viewer is open.
+    forceViewerRerenderAfterThemeChange();
 }
 
 
