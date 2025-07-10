@@ -3758,7 +3758,8 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
         const bgUpdateLabel = document.createElement('label');
         bgUpdateLabel.htmlFor = 'otk-disable-bg-update-checkbox';
         bgUpdateLabel.textContent = 'Disable Background Updates'; // Restored full text
-        bgUpdateLabel.style.cssText = `font-size: 11px; color: #e6e6e6; white-space: normal; cursor: pointer; line-height: 1.2;`; // New font color
+        // Apply the new CSS variable for the font color
+        bgUpdateLabel.style.cssText = `font-size: 11px; color: var(--otk-disable-bg-font-color, #e6e6e6); white-space: normal; cursor: pointer; line-height: 1.2;`;
 
         bgUpdateCheckboxContainer.appendChild(bgUpdateCheckbox);
         bgUpdateCheckboxContainer.appendChild(bgUpdateLabel);
@@ -4131,6 +4132,25 @@ function applyThemeSettings() {
         if (input) input.value = settings.viewerMessageFontSize.replace('px','');
     }
 
+    // Message Layout Dropdown
+    if (settings.otkMessageLayoutStyle) { // Check if the setting exists
+        const layoutDropdown = document.getElementById('otk-message-layout-dropdown');
+        if (layoutDropdown) {
+            layoutDropdown.value = settings.otkMessageLayoutStyle;
+        }
+        // Apply layout classes to viewer (this might be redundant if forceViewerRerenderAfterThemeChange also does it, but good for initial load)
+        if (otkViewer) {
+            if (settings.otkMessageLayoutStyle === 'new_design') {
+                otkViewer.classList.add('otk-message-layout-newdesign');
+                otkViewer.classList.remove('otk-message-layout-default');
+            } else {
+                otkViewer.classList.add('otk-message-layout-default');
+                otkViewer.classList.remove('otk-message-layout-newdesign');
+            }
+        }
+    }
+
+
     if (settings.guiBottomBorderColor) {
         document.documentElement.style.setProperty('--otk-gui-bottom-border-color', settings.guiBottomBorderColor);
         const hexInput = document.getElementById('otk-color-gui-bottom-border-hex');
@@ -4155,6 +4175,25 @@ function applyThemeSettings() {
         const cogIconElement = document.getElementById('otk-settings-cog');
         if (cogIconElement) {
             cogIconElement.style.color = ''; // Clear inline style to use CSS variable's default
+        }
+    }
+
+    // Disable Background Font Color
+    if (settings.disableBgFontColor) {
+        document.documentElement.style.setProperty('--otk-disable-bg-font-color', settings.disableBgFontColor);
+        const hexInput = document.getElementById('otk-disable-bg-font-hex');
+        const picker = document.getElementById('otk-disable-bg-font');
+        if (hexInput) hexInput.value = settings.disableBgFontColor;
+        if (picker) picker.value = settings.disableBgFontColor;
+        // Apply to the label directly if it exists
+        const bgUpdateLabel = document.querySelector('label[for="otk-disable-bg-update-checkbox"]');
+        if (bgUpdateLabel) {
+            bgUpdateLabel.style.color = settings.disableBgFontColor;
+        }
+    } else {
+        const bgUpdateLabel = document.querySelector('label[for="otk-disable-bg-update-checkbox"]');
+        if (bgUpdateLabel) {
+            bgUpdateLabel.style.color = ''; // Clear inline style
         }
     }
 
@@ -4720,80 +4759,99 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Titles Font:", storageKey: 'guiThreadListTitleColor', cssVariable: '--otk-gui-threadlist-title-color', defaultValue: '#e0e0e0', inputType: 'color', idSuffix: 'threadlist-title' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Times Font:", storageKey: 'guiThreadListTimeColor', cssVariable: '--otk-gui-threadlist-time-color', defaultValue: '#aaa', inputType: 'color', idSuffix: 'threadlist-time' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Stats Font:", storageKey: 'actualStatsTextColor', cssVariable: '--otk-stats-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'actual-stats-text' }));
-    themeOptionsContainer.appendChild(createDivider());
-
-    // --- Message Layout Option ---
-    themeOptionsContainer.appendChild(createSectionHeading('Message Layout'));
-    const layoutSettingKey = 'otkMessageLayoutStyle';
-    const currentLayout = localStorage.getItem(layoutSettingKey) || 'default';
-
-    const layoutOptions = [
-        { label: 'Default', value: 'default' },
-        { label: 'New Design', value: 'new_design' }
-    ];
-
-    const layoutGroup = document.createElement('div');
-    layoutGroup.style.cssText = "display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px;"; // Stack radio buttons vertically
-
-    layoutOptions.forEach(opt => {
-        const radioWrapper = document.createElement('div');
-        radioWrapper.style.cssText = "display: flex; align-items: center;";
-
-        const radioInput = document.createElement('input');
-        radioInput.type = 'radio';
-        radioInput.name = 'otkMessageLayout';
-        radioInput.id = `otk-layout-${opt.value}`;
-        radioInput.value = opt.value;
-        radioInput.checked = currentLayout === opt.value;
-        radioInput.style.marginRight = "8px";
-
-        const radioLabel = document.createElement('label');
-        radioLabel.htmlFor = `otk-layout-${opt.value}`;
-        radioLabel.textContent = opt.label;
-        radioLabel.style.fontSize = "12px";
-
-        radioInput.addEventListener('change', () => {
-            if (radioInput.checked) {
-                localStorage.setItem(layoutSettingKey, opt.value);
-                consoleLog(`Message layout changed to: ${opt.value}`);
-                // Need to trigger a re-render of the viewer if it's open
-                if (otkViewer && otkViewer.style.display === 'block') {
-                    // Add a class to a high-level container (e.g., otkViewer) to switch styles
-                    if (opt.value === 'new_design') {
-                        otkViewer.classList.add('otk-message-layout-newdesign');
-                        otkViewer.classList.remove('otk-message-layout-default'); // Ensure default is removed
-                    } else {
-                        otkViewer.classList.add('otk-message-layout-default');
-                        otkViewer.classList.remove('otk-message-layout-newdesign'); // Ensure newdesign is removed
-                    }
-                    renderMessagesInViewer(); // Re-render with the new style
-                }
-            }
-        });
-
-        radioWrapper.appendChild(radioInput);
-        radioWrapper.appendChild(radioLabel);
-        layoutGroup.appendChild(radioWrapper);
-    });
-    themeOptionsContainer.appendChild(layoutGroup);
-
-    // Sub-section for GUI Buttons
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Cog Icon Color:", storageKey: 'cogIconColor', cssVariable: '--otk-cog-icon-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'cog-icon' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Disable BG Update Font:", storageKey: 'disableBgFontColor', cssVariable: '--otk-disable-bg-font-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'disable-bg-font' }));
+    
+    // Sub-section for GUI Buttons (This is part of the main GUI section now)
     const guiButtonsSubHeading = document.createElement('h6');
     guiButtonsSubHeading.textContent = "GUI Buttons";
-    guiButtonsSubHeading.style.cssText = "margin-top: 15px; margin-bottom: 5px; color: #cccccc; font-size: 12px; font-weight: bold;"; // Simple sub-heading style
+    guiButtonsSubHeading.style.cssText = "margin-top: 15px; margin-bottom: 5px; color: #cccccc; font-size: 12px; font-weight: bold;";
     themeOptionsContainer.appendChild(guiButtonsSubHeading);
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Background:", storageKey: 'guiButtonBgColor', cssVariable: '--otk-button-bg-color', defaultValue: '#555555', inputType: 'color', idSuffix: 'gui-button-bg' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Text:", storageKey: 'guiButtonTextColor', cssVariable: '--otk-button-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'gui-button-text' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Border:", storageKey: 'guiButtonBorderColor', cssVariable: '--otk-button-border-color', defaultValue: '#777777', inputType: 'color', idSuffix: 'gui-button-border' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Hover BG:", storageKey: 'guiButtonHoverBgColor', cssVariable: '--otk-button-hover-bg-color', defaultValue: '#666666', inputType: 'color', idSuffix: 'gui-button-hover-bg' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Active BG:", storageKey: 'guiButtonActiveBgColor', cssVariable: '--otk-button-active-bg-color', defaultValue: '#444444', inputType: 'color', idSuffix: 'gui-button-active-bg' }));
-
-    themeOptionsContainer.appendChild(createDivider());
+    
+    themeOptionsContainer.appendChild(createDivider()); // Divider after all GUI options (including buttons)
 
     // --- Viewer Section ---
     themeOptionsContainer.appendChild(createSectionHeading('Viewer'));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background:", storageKey: 'viewerBgColor', cssVariable: '--otk-viewer-bg-color', defaultValue: '#181818', inputType: 'color', idSuffix: 'viewer-bg' }));
     // Assuming "Header Divider" refers to the GUI's bottom border as discussed.
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "GUI Bottom Border:", storageKey: 'guiBottomBorderColor', cssVariable: '--otk-gui-bottom-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'gui-bottom-border' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Msgs Divider:", storageKey: 'newMessagesDividerColor', cssVariable: '--otk-new-messages-divider-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-divider' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Msgs Font:", storageKey: 'newMessagesFontColor', cssVariable: '--otk-new-messages-font-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-font' }));
+    themeOptionsContainer.appendChild(createDivider());
+
+    // --- Messages Section ---
+    themeOptionsContainer.appendChild(createSectionHeading('GUI'));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background:", storageKey: 'guiBgColor', cssVariable: '--otk-gui-bg-color', defaultValue: '#181818', inputType: 'color', idSuffix: 'gui-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Title Font:", storageKey: 'titleTextColor', cssVariable: '--otk-title-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'title-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Titles Font:", storageKey: 'guiThreadListTitleColor', cssVariable: '--otk-gui-threadlist-title-color', defaultValue: '#e0e0e0', inputType: 'color', idSuffix: 'threadlist-title' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Times Font:", storageKey: 'guiThreadListTimeColor', cssVariable: '--otk-gui-threadlist-time-color', defaultValue: '#aaa', inputType: 'color', idSuffix: 'threadlist-time' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Stats Font:", storageKey: 'actualStatsTextColor', cssVariable: '--otk-stats-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'actual-stats-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Cog Icon Color:", storageKey: 'cogIconColor', cssVariable: '--otk-cog-icon-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'cog-icon' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Disable BG Update Font:", storageKey: 'disableBgFontColor', cssVariable: '--otk-disable-bg-font-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'disable-bg-font' }));
+    
+    // Sub-section for GUI Buttons (This is part of the main GUI section now)
+    const guiButtonsSubHeading = document.createElement('h6');
+    guiButtonsSubHeading.textContent = "GUI Buttons";
+    guiButtonsSubHeading.style.cssText = "margin-top: 15px; margin-bottom: 5px; color: #cccccc; font-size: 12px; font-weight: bold;";
+    themeOptionsContainer.appendChild(guiButtonsSubHeading);
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Background:", storageKey: 'guiButtonBgColor', cssVariable: '--otk-button-bg-color', defaultValue: '#555555', inputType: 'color', idSuffix: 'gui-button-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Text:", storageKey: 'guiButtonTextColor', cssVariable: '--otk-button-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'gui-button-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Border:", storageKey: 'guiButtonBorderColor', cssVariable: '--otk-button-border-color', defaultValue: '#777777', inputType: 'color', idSuffix: 'gui-button-border' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Hover BG:", storageKey: 'guiButtonHoverBgColor', cssVariable: '--otk-button-hover-bg-color', defaultValue: '#666666', inputType: 'color', idSuffix: 'gui-button-hover-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Active BG:", storageKey: 'guiButtonActiveBgColor', cssVariable: '--otk-button-active-bg-color', defaultValue: '#444444', inputType: 'color', idSuffix: 'gui-button-active-bg' }));
+    
+    themeOptionsContainer.appendChild(createDivider()); // Divider after all GUI options (including buttons)
+
+    // --- Viewer Section ---
+    themeOptionsContainer.appendChild(createSectionHeading('Viewer'));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background:", storageKey: 'viewerBgColor', cssVariable: '--otk-viewer-bg-color', defaultValue: '#181818', inputType: 'color', idSuffix: 'viewer-bg' }));
+    
+    // Add Message Layout Dropdown to Viewer section
+    const layoutSettingKey = 'otkMessageLayoutStyle';
+    const currentLayout = localStorage.getItem(layoutSettingKey) || 'default';
+    const layoutDropdownGroup = document.createElement('div');
+    layoutDropdownGroup.style.cssText = "display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
+
+    const layoutDropdownLabel = document.createElement('label');
+    layoutDropdownLabel.textContent = "Message Layout:";
+    layoutDropdownLabel.htmlFor = 'otk-message-layout-dropdown';
+    layoutDropdownLabel.style.cssText = "min-width: 160px; text-align: right; margin-right: 5px; font-size: 12px; flex-shrink: 0;";
+
+    const messageLayoutDropdown = document.createElement('select');
+    messageLayoutDropdown.id = 'otk-message-layout-dropdown';
+    messageLayoutDropdown.style.cssText = "flex-grow: 1; height: 25px; box-sizing: border-box; font-size: 12px;";
+
+    const layoutOptions = [
+        { label: 'Default', value: 'default' },
+        { label: 'New Design', value: 'new_design' }
+    ];
+
+    layoutOptions.forEach(opt => {
+        const optionElement = document.createElement('option');
+        optionElement.value = opt.value;
+        optionElement.textContent = opt.label;
+        if (currentLayout === opt.value) {
+            optionElement.selected = true;
+        }
+        messageLayoutDropdown.appendChild(optionElement);
+    });
+
+    messageLayoutDropdown.addEventListener('change', () => {
+        const selectedLayout = messageLayoutDropdown.value;
+        localStorage.setItem(layoutSettingKey, selectedLayout);
+        consoleLog(`Message layout changed to: ${selectedLayout}`);
+        forceViewerRerenderAfterThemeChange(); // This function already checks if viewer is open
+    });
+
+    layoutDropdownGroup.appendChild(layoutDropdownLabel);
+    layoutDropdownGroup.appendChild(messageLayoutDropdown);
+    themeOptionsContainer.appendChild(layoutDropdownGroup);
+    
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "GUI Bottom Border:", storageKey: 'guiBottomBorderColor', cssVariable: '--otk-gui-bottom-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'gui-bottom-border' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Msgs Divider:", storageKey: 'newMessagesDividerColor', cssVariable: '--otk-new-messages-divider-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-divider' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Msgs Font:", storageKey: 'newMessagesFontColor', cssVariable: '--otk-new-messages-font-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-font' }));
@@ -4815,12 +4873,11 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Background:", storageKey: 'msgDepth2plusBgColor', cssVariable: '--otk-msg-depth2plus-bg-color', defaultValue: '#484848', inputType: 'color', idSuffix: 'msg-depth2plus-bg' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Font:", storageKey: 'msgDepth2plusTextColor', cssVariable: '--otk-msg-depth2plus-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-text' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Header Font:", storageKey: 'msgDepth2plusHeaderTextColor', cssVariable: '--otk-msg-depth2plus-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-header-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Header Underline:", storageKey: 'viewerQuote2plusHeaderBorderColor', cssVariable: '--otk-viewer-quote2plus-header-border-color', defaultValue: '#2a2a2a', inputType: 'color', idSuffix: 'viewer-quote2plus-border' })); // New option
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Header Underline:", storageKey: 'viewerQuote2plusHeaderBorderColor', cssVariable: '--otk-viewer-quote2plus-header-border-color', defaultValue: '#2a2a2a', inputType: 'color', idSuffix: 'viewer-quote2plus-border' }));
     themeOptionsContainer.appendChild(createDivider());
-
+    
     // --- Options Section ---
     themeOptionsContainer.appendChild(createSectionHeading('Options Panel'));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Cog Icon Color:", storageKey: 'cogIconColor', cssVariable: '--otk-cog-icon-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'cog-icon' })); // New option
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Panel Font:", storageKey: 'optionsTextColor', cssVariable: '--otk-options-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'options-text' }));
     themeOptionsContainer.appendChild(createDivider());
 
@@ -5293,6 +5350,7 @@ async function main() {
             --otk-viewer-message-font-size: 13px; /* Default font size for message text - remains common */
             --otk-gui-bottom-border-color: #555; /* Default for GUI bottom border - remains common */
             --otk-cog-icon-color: #e6e6e6; /* Default for settings cog icon */
+            --otk-disable-bg-font-color: #e6e6e6; /* Default for "Disable Background Updates" text */
             --otk-viewer-quote2plus-header-border-color: #2a2a2a; /* Default for Depth 2+ message header underline */
             --otk-new-messages-divider-color: #FFD700; /* Default for new message separator line */
             --otk-new-messages-font-color: #FFD700; /* Default for new message separator text */
