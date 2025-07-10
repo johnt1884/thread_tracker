@@ -4609,12 +4609,11 @@ function setupOptionsWindow() {
     function createThemeOptionRow(options) {
         // options = { labelText, storageKey, cssVariable, defaultValue, inputType ('color'|'number'), unit ('px'|null), min, max, idSuffix }
         const group = document.createElement('div');
-        // Using CSS Grid for better control over column widths and alignment
+        // Using Flexbox for more dynamic sizing
         group.style.cssText = `
-            display: grid;
-            grid-template-columns: 180px 75px 50px auto; /* Label, Hex, Picker, Button */
-            align-items: center;
-            gap: 8px;
+            display: flex;
+            align-items: center; /* Vertically align label and controls-wrapper */
+            gap: 8px; /* Space between label and controls-wrapper */
             width: 100%;
             margin-bottom: 5px;
         `;
@@ -4622,37 +4621,56 @@ function setupOptionsWindow() {
         const label = document.createElement('label');
         label.textContent = options.labelText;
         label.htmlFor = `otk-${options.idSuffix}`; // Points to the main input (picker or number input)
-        label.style.cssText = "text-align: right; font-size: 12px; grid-column: 1;"; // Label in column 1
+        label.style.cssText = `
+            font-size: 12px;
+            text-align: left;
+            flex-basis: 230px; /* Accommodate longest label */
+            flex-shrink: 0; /* Prevent shrinking */
+        `;
+
+        // Create a wrapper for all controls (hex, main input, button)
+        const controlsWrapperDiv = document.createElement('div');
+        controlsWrapperDiv.style.cssText = `
+            display: flex;
+            flex-grow: 1; /* Take remaining space */
+            align-items: center; /* Vertically align controls */
+            gap: 8px; /* Space between controls */
+            min-width: 0; /* Allow shrinking if needed */
+        `;
 
         let hexInput = null;
         if (options.inputType === 'color') {
             hexInput = document.createElement('input');
             hexInput.type = 'text';
             hexInput.id = `otk-${options.idSuffix}-hex`;
-            hexInput.style.cssText = "width: 100%; height: 25px; box-sizing: border-box; font-size: 12px; grid-column: 2;"; // Hex input in column 2
+            hexInput.style.cssText = `
+                flex: 1 1 70px; /* flex-grow, flex-shrink, flex-basis */
+                min-width: 50px;
+                height: 25px;
+                box-sizing: border-box;
+                font-size: 12px;
+            `;
         }
 
         const mainInput = document.createElement('input');
         mainInput.type = options.inputType;
         mainInput.id = `otk-${options.idSuffix}`;
         if (options.inputType === 'color') {
-            // Color picker in column 3
-            mainInput.style.cssText = "width: 100%; height: 25px; padding: 0px 2px; box-sizing: border-box; grid-column: 3;";
-        } else if (options.inputType === 'number') {
-            // Number input spans columns 2 and 3 for more space, or adjust grid-template-columns
-            // For now, let's assume number inputs might not need a hex field, so they can take more space.
-            // If a number input needs to align with where hex+picker would be, the grid columns need adjustment
-            // or the number input should be styled to fit into one of these columns.
-            // Let's make number inputs take the space of the hex input (column 2) and hide column 3 for them.
-            // This means we might need conditional grid styling or different row types.
-            // Number input spans columns 2 and 3 (hex and picker areas)
             mainInput.style.cssText = `
-                width: 100%; /* Fill the spanned area */
+                flex-grow: 0;
+                flex-shrink: 0;
+                width: 30px; /* Adjusted width */
+                height: 25px;
+                padding: 1px; /* Adjusted padding */
+                box-sizing: border-box;
+            `;
+        } else if (options.inputType === 'number') {
+            mainInput.style.cssText = `
+                flex: 1 1 60px; /* flex-grow, flex-shrink, flex-basis */
+                min-width: 40px;
                 height: 25px;
                 box-sizing: border-box;
                 font-size: 12px;
-                grid-column: 2 / span 2; /* Span columns 2 and 3 */
-                justify-self: start; /* Align input itself to the start of its grid area */
             `;
             if (options.min !== undefined) mainInput.min = options.min;
             if (options.max !== undefined) mainInput.max = options.max;
@@ -4660,16 +4678,26 @@ function setupOptionsWindow() {
 
         const defaultBtn = document.createElement('button');
         defaultBtn.textContent = 'Default';
-        // Default button in column 4
-        defaultBtn.style.cssText = "padding: 2px 5px; width: 60px; height: 25px; font-size: 11px; grid-column: 4; justify-self: start;";
+        defaultBtn.style.cssText = `
+            flex-grow: 0;
+            flex-shrink: 0;
+            padding: 2px 6px; /* Adjusted padding */
+            height: 25px;
+            font-size: 11px;
+            box-sizing: border-box;
+            width: auto;
+        `;
 
         group.appendChild(label);
-        if (hexInput) { // Only add hexInput if it's a color type
-            group.appendChild(hexInput);
+
+        // Append controls to their wrapper
+        if (hexInput) {
+            controlsWrapperDiv.appendChild(hexInput);
         }
-        // Main input (color picker or number input) is always added
-        group.appendChild(mainInput);
-        group.appendChild(defaultBtn);
+        controlsWrapperDiv.appendChild(mainInput);
+        controlsWrapperDiv.appendChild(defaultBtn);
+
+        group.appendChild(controlsWrapperDiv); // Append the wrapper to the main group
 
         // Determine initial value for inputs
         let initialValue = getComputedStyle(document.documentElement).getPropertyValue(options.cssVariable)?.trim() || options.defaultValue;
@@ -4772,7 +4800,7 @@ function setupOptionsWindow() {
         const h = document.createElement('h5');
         h.textContent = text;
         // Adjusted margins for more space, removed border-bottom
-        h.style.cssText = "margin-top: 20px; margin-bottom: 12px; color: #cccccc; font-size: 13px; padding-bottom: 4px; font-weight: bold;";
+        h.style.cssText = "margin-top: 10px; margin-bottom: 6px; color: #cccccc; font-size: 13px; padding-bottom: 4px; font-weight: bold; text-align: left;";
         return h;
     }
 
@@ -4782,40 +4810,43 @@ function setupOptionsWindow() {
     // --- GUI Section ---
     const guiSectionHeading = createSectionHeading('GUI');
     guiSectionHeading.style.marginTop = "0px"; // First heading doesn't need extra top margin
+    guiSectionHeading.style.marginBottom = "18px"; // Increased bottom margin for specific space after GUI heading
     themeOptionsContainer.appendChild(guiSectionHeading);
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background Colour:", storageKey: 'guiBgColor', cssVariable: '--otk-gui-bg-color', defaultValue: '#181818', inputType: 'color', idSuffix: 'gui-bg' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Title Font Colour:", storageKey: 'titleTextColor', cssVariable: '--otk-title-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'title-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Titles Font Colour:", storageKey: 'guiThreadListTitleColor', cssVariable: '--otk-gui-threadlist-title-color', defaultValue: '#e0e0e0', inputType: 'color', idSuffix: 'threadlist-title' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Times Font Colour:", storageKey: 'guiThreadListTimeColor', cssVariable: '--otk-gui-threadlist-time-color', defaultValue: '#aaa', inputType: 'color', idSuffix: 'threadlist-time' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Stats Font Colour:", storageKey: 'actualStatsTextColor', cssVariable: '--otk-stats-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'actual-stats-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Cog Icon Colour:", storageKey: 'cogIconColor', cssVariable: '--otk-cog-icon-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'cog-icon' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Disable BG Update Font Colour:", storageKey: 'disableBgFontColor', cssVariable: '--otk-disable-bg-font-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'disable-bg-font' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background:", storageKey: 'guiBgColor', cssVariable: '--otk-gui-bg-color', defaultValue: '#181818', inputType: 'color', idSuffix: 'gui-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Title Text:", storageKey: 'titleTextColor', cssVariable: '--otk-title-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'title-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Titles Text:", storageKey: 'guiThreadListTitleColor', cssVariable: '--otk-gui-threadlist-title-color', defaultValue: '#e0e0e0', inputType: 'color', idSuffix: 'threadlist-title' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Times Text:", storageKey: 'guiThreadListTimeColor', cssVariable: '--otk-gui-threadlist-time-color', defaultValue: '#aaa', inputType: 'color', idSuffix: 'threadlist-time' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Stats Text:", storageKey: 'actualStatsTextColor', cssVariable: '--otk-stats-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'actual-stats-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Cog Icon:", storageKey: 'cogIconColor', cssVariable: '--otk-cog-icon-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'cog-icon' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Disable Background Update Text:", storageKey: 'disableBgFontColor', cssVariable: '--otk-disable-bg-font-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'disable-bg-font' }));
 
     // Sub-section for GUI Buttons
     const guiButtonsSubHeading = document.createElement('h6');
     guiButtonsSubHeading.textContent = "GUI Buttons";
-    guiButtonsSubHeading.style.cssText = "margin-top: 15px; margin-bottom: 5px; color: #cccccc; font-size: 12px; font-weight: bold;";
+    guiButtonsSubHeading.style.cssText = "margin-top: 20px; margin-bottom: 15px; color: #cccccc; font-size: 12px; font-weight: bold; text-align: left;"; // Increased margin-top and margin-bottom
     themeOptionsContainer.appendChild(guiButtonsSubHeading);
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Background Colour:", storageKey: 'guiButtonBgColor', cssVariable: '--otk-button-bg-color', defaultValue: '#555555', inputType: 'color', idSuffix: 'gui-button-bg' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Text Colour:", storageKey: 'guiButtonTextColor', cssVariable: '--otk-button-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'gui-button-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Border Colour:", storageKey: 'guiButtonBorderColor', cssVariable: '--otk-button-border-color', defaultValue: '#777777', inputType: 'color', idSuffix: 'gui-button-border' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Hover BG Colour:", storageKey: 'guiButtonHoverBgColor', cssVariable: '--otk-button-hover-bg-color', defaultValue: '#666666', inputType: 'color', idSuffix: 'gui-button-hover-bg' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Button Active BG Colour:", storageKey: 'guiButtonActiveBgColor', cssVariable: '--otk-button-active-bg-color', defaultValue: '#444444', inputType: 'color', idSuffix: 'gui-button-active-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background:", storageKey: 'guiButtonBgColor', cssVariable: '--otk-button-bg-color', defaultValue: '#555555', inputType: 'color', idSuffix: 'gui-button-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Text:", storageKey: 'guiButtonTextColor', cssVariable: '--otk-button-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'gui-button-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Border:", storageKey: 'guiButtonBorderColor', cssVariable: '--otk-button-border-color', defaultValue: '#777777', inputType: 'color', idSuffix: 'gui-button-border' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Hover Background:", storageKey: 'guiButtonHoverBgColor', cssVariable: '--otk-button-hover-bg-color', defaultValue: '#666666', inputType: 'color', idSuffix: 'gui-button-hover-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Active Background:", storageKey: 'guiButtonActiveBgColor', cssVariable: '--otk-button-active-bg-color', defaultValue: '#444444', inputType: 'color', idSuffix: 'gui-button-active-bg' }));
 
-    themeOptionsContainer.appendChild(createDivider());
+    // themeOptionsContainer.appendChild(createDivider()); // Removed divider
 
     // --- Viewer Section ---
-    themeOptionsContainer.appendChild(createSectionHeading('Viewer'));
+    const viewerSectionHeading = createSectionHeading('Viewer');
+    viewerSectionHeading.style.marginTop = "22px"; // Increased top margin for space before Viewer heading
+    viewerSectionHeading.style.marginBottom = "18px"; // Increased bottom margin for space after Viewer heading
+    themeOptionsContainer.appendChild(viewerSectionHeading);
 
     // Add Message Layout Dropdown to Viewer section (moved to top)
     // Add Message Layout Dropdown to Viewer section (moved to top)
     const layoutSettingKey = 'otkMessageLayoutStyle';
     const currentLayout = localStorage.getItem(layoutSettingKey) || 'default';
     const layoutDropdownGroup = document.createElement('div');
-    // Use the same 4-column grid definition as createThemeOptionRow
+    // Using Flexbox to align with createThemeOptionRow
     layoutDropdownGroup.style.cssText = `
-        display: grid;
-        grid-template-columns: 180px 75px 50px auto; /* Label, Hex-space, Picker-space, Button-space */
+        display: flex;
         align-items: center;
         gap: 8px;
         width: 100%;
@@ -4825,18 +4856,27 @@ function setupOptionsWindow() {
     const layoutDropdownLabel = document.createElement('label');
     layoutDropdownLabel.textContent = "Message Layout:";
     layoutDropdownLabel.htmlFor = 'otk-message-layout-dropdown';
-    layoutDropdownLabel.style.cssText = "text-align: right; font-size: 12px; grid-column: 1;";
+    layoutDropdownLabel.style.cssText = `
+        font-size: 12px;
+        text-align: left;
+        flex-basis: 230px; /* Consistent with createThemeOptionRow */
+        flex-shrink: 0;   /* Consistent with createThemeOptionRow */
+    `;
+
+    const controlsWrapperForDropdown = document.createElement('div');
+    controlsWrapperForDropdown.style.cssText = `
+        display: flex;
+        flex-grow: 1;
+        align-items: center;
+    `;
 
     const messageLayoutDropdown = document.createElement('select');
     messageLayoutDropdown.id = 'otk-message-layout-dropdown';
-    // The dropdown should start in column 2 (like hex inputs) and span 3 columns to align its end with column 4 (like default buttons)
     messageLayoutDropdown.style.cssText = `
-        grid-column: 2 / span 3; /* Spans columns 2, 3, and 4 */
-        width: 100%; /* Fill the entire spanned area */
+        flex-grow: 1; /* Allow dropdown to take available space in its wrapper */
         height: 25px;
         box-sizing: border-box;
         font-size: 12px;
-        /* justify-self: start; /* Not needed if width is 100% */
     `;
 
     const layoutOptions = [
@@ -4862,90 +4902,105 @@ function setupOptionsWindow() {
     });
 
     layoutDropdownGroup.appendChild(layoutDropdownLabel);
-    layoutDropdownGroup.appendChild(messageLayoutDropdown);
+    controlsWrapperForDropdown.appendChild(messageLayoutDropdown); // Add dropdown to its wrapper
+    layoutDropdownGroup.appendChild(controlsWrapperForDropdown); // Add wrapper to the group
     themeOptionsContainer.appendChild(layoutDropdownGroup); // Appended first in Viewer section
 
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background Colour:", storageKey: 'viewerBgColor', cssVariable: '--otk-viewer-bg-color', defaultValue: '#181818', inputType: 'color', idSuffix: 'viewer-bg' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "GUI Bottom Border Colour:", storageKey: 'guiBottomBorderColor', cssVariable: '--otk-gui-bottom-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'gui-bottom-border' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Msgs Divider Colour:", storageKey: 'newMessagesDividerColor', cssVariable: '--otk-new-messages-divider-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-divider' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Msgs Font Colour:", storageKey: 'newMessagesFontColor', cssVariable: '--otk-new-messages-font-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-font' }));
-    themeOptionsContainer.appendChild(createDivider());
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background:", storageKey: 'viewerBgColor', cssVariable: '--otk-viewer-bg-color', defaultValue: '#181818', inputType: 'color', idSuffix: 'viewer-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "GUI Bottom Border:", storageKey: 'guiBottomBorderColor', cssVariable: '--otk-gui-bottom-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'gui-bottom-border' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Messages Divider:", storageKey: 'newMessagesDividerColor', cssVariable: '--otk-new-messages-divider-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-divider' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Messages Text:", storageKey: 'newMessagesFontColor', cssVariable: '--otk-new-messages-font-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-font' }));
+    // themeOptionsContainer.appendChild(createDivider()); // Removed divider
 
     // --- Messages Section ---
-    themeOptionsContainer.appendChild(createSectionHeading('Messages'));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Font Size (px):", storageKey: 'viewerMessageFontSize', cssVariable: '--otk-viewer-message-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'fontsize-message-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Background Colour:", storageKey: 'msgDepth0BgColor', cssVariable: '--otk-msg-depth0-bg-color', defaultValue: '#343434', inputType: 'color', idSuffix: 'msg-depth0-bg' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Font Colour:", storageKey: 'msgDepth0TextColor', cssVariable: '--otk-msg-depth0-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Header Font Colour:", storageKey: 'msgDepth0HeaderTextColor', cssVariable: '--otk-msg-depth0-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-header-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Header Underline Colour:", storageKey: 'viewerHeaderBorderColor', cssVariable: '--otk-viewer-header-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'viewer-header-border' }));
+    const messagesSectionHeading = createSectionHeading('Messages');
+    messagesSectionHeading.style.marginTop = "22px"; // Increased top margin
+    messagesSectionHeading.style.marginBottom = "18px"; // Increased bottom margin
+    themeOptionsContainer.appendChild(messagesSectionHeading);
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Text Size (px):", storageKey: 'viewerMessageFontSize', cssVariable: '--otk-viewer-message-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'fontsize-message-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Background:", storageKey: 'msgDepth0BgColor', cssVariable: '--otk-msg-depth0-bg-color', defaultValue: '#343434', inputType: 'color', idSuffix: 'msg-depth0-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Text:", storageKey: 'msgDepth0TextColor', cssVariable: '--otk-msg-depth0-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Header Text:", storageKey: 'msgDepth0HeaderTextColor', cssVariable: '--otk-msg-depth0-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-header-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Header Underline:", storageKey: 'viewerHeaderBorderColor', cssVariable: '--otk-viewer-header-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'viewer-header-border' }));
 
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Background Colour:", storageKey: 'msgDepth1BgColor', cssVariable: '--otk-msg-depth1-bg-color', defaultValue: '#525252', inputType: 'color', idSuffix: 'msg-depth1-bg' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Font Colour:", storageKey: 'msgDepth1TextColor', cssVariable: '--otk-msg-depth1-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Header Font Colour:", storageKey: 'msgDepth1HeaderTextColor', cssVariable: '--otk-msg-depth1-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-header-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Header Underline Colour:", storageKey: 'viewerQuote1HeaderBorderColor', cssVariable: '--otk-viewer-quote1-header-border-color', defaultValue: '#343434', inputType: 'color', idSuffix: 'viewer-quote1-border' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Background:", storageKey: 'msgDepth1BgColor', cssVariable: '--otk-msg-depth1-bg-color', defaultValue: '#525252', inputType: 'color', idSuffix: 'msg-depth1-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Text:", storageKey: 'msgDepth1TextColor', cssVariable: '--otk-msg-depth1-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Header Text:", storageKey: 'msgDepth1HeaderTextColor', cssVariable: '--otk-msg-depth1-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-header-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Header Underline:", storageKey: 'viewerQuote1HeaderBorderColor', cssVariable: '--otk-viewer-quote1-header-border-color', defaultValue: '#343434', inputType: 'color', idSuffix: 'viewer-quote1-border' }));
 
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Background Colour:", storageKey: 'msgDepth2plusBgColor', cssVariable: '--otk-msg-depth2plus-bg-color', defaultValue: '#484848', inputType: 'color', idSuffix: 'msg-depth2plus-bg' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Font Colour:", storageKey: 'msgDepth2plusTextColor', cssVariable: '--otk-msg-depth2plus-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Header Font Colour:", storageKey: 'msgDepth2plusHeaderTextColor', cssVariable: '--otk-msg-depth2plus-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-header-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Header Underline Colour:", storageKey: 'viewerQuote2plusHeaderBorderColor', cssVariable: '--otk-viewer-quote2plus-header-border-color', defaultValue: '#2a2a2a', inputType: 'color', idSuffix: 'viewer-quote2plus-border' }));
-    themeOptionsContainer.appendChild(createDivider());
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Background:", storageKey: 'msgDepth2plusBgColor', cssVariable: '--otk-msg-depth2plus-bg-color', defaultValue: '#484848', inputType: 'color', idSuffix: 'msg-depth2plus-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Text:", storageKey: 'msgDepth2plusTextColor', cssVariable: '--otk-msg-depth2plus-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Header Text:", storageKey: 'msgDepth2plusHeaderTextColor', cssVariable: '--otk-msg-depth2plus-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-header-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Header Underline:", storageKey: 'viewerQuote2plusHeaderBorderColor', cssVariable: '--otk-viewer-quote2plus-header-border-color', defaultValue: '#2a2a2a', inputType: 'color', idSuffix: 'viewer-quote2plus-border' }));
+    // themeOptionsContainer.appendChild(createDivider()); // Removed divider
 
     // --- Options Panel Section ---
-    themeOptionsContainer.appendChild(createSectionHeading('Options Panel'));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Panel Font Colour:", storageKey: 'optionsTextColor', cssVariable: '--otk-options-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'options-text' }));
-    themeOptionsContainer.appendChild(createDivider());
+    const optionsPanelSectionHeading = createSectionHeading('Options Panel');
+    optionsPanelSectionHeading.style.marginTop = "22px"; // Increased top margin
+    optionsPanelSectionHeading.style.marginBottom = "18px"; // Increased bottom margin
+    themeOptionsContainer.appendChild(optionsPanelSectionHeading);
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Panel Text:", storageKey: 'optionsTextColor', cssVariable: '--otk-options-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'options-text' }));
+    // themeOptionsContainer.appendChild(createDivider()); // Removed divider
 
     // --- Loading Screen Sub-Section (within Theme) ---
     const loadingScreenSubHeading = document.createElement('h6');
     loadingScreenSubHeading.textContent = "Loading Screen";
-    loadingScreenSubHeading.style.cssText = "margin-top: 15px; margin-bottom: 5px; color: #cccccc; font-size: 12px; font-weight: bold;";
+    loadingScreenSubHeading.style.cssText = "margin-top: 20px; margin-bottom: 15px; color: #cccccc; font-size: 12px; font-weight: bold; text-align: left;"; // Increased margin-top and margin-bottom
     themeOptionsContainer.appendChild(loadingScreenSubHeading);
 
     // Add Overlay Opacity first
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Overlay Opacity:", storageKey: 'loadingOverlayOpacity', cssVariable: '--otk-loading-overlay-opacity', defaultValue: '0.8', inputType: 'number', min:0.0, max:1.0, step:0.05, idSuffix: 'loading-overlay-opacity' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Overlay Base Colour:", storageKey: 'loadingOverlayBaseHexColor', cssVariable: '--otk-loading-overlay-base-hex-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'loading-overlay-base-hex' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Text Colour:", storageKey: 'loadingTextColor', cssVariable: '--otk-loading-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'loading-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Progress Bar BG Colour:", storageKey: 'loadingProgressBarBgColor', cssVariable: '--otk-loading-progress-bar-bg-color', defaultValue: '#333333', inputType: 'color', idSuffix: 'loading-progress-bg' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Progress Bar Fill Colour:", storageKey: 'loadingProgressBarFillColor', cssVariable: '--otk-loading-progress-bar-fill-color', defaultValue: '#4CAF50', inputType: 'color', idSuffix: 'loading-progress-fill' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Progress Bar Text Colour:", storageKey: 'loadingProgressBarTextColor', cssVariable: '--otk-loading-progress-bar-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'loading-progress-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Overlay Base:", storageKey: 'loadingOverlayBaseHexColor', cssVariable: '--otk-loading-overlay-base-hex-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'loading-overlay-base-hex' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Text:", storageKey: 'loadingTextColor', cssVariable: '--otk-loading-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'loading-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Progress Bar Background:", storageKey: 'loadingProgressBarBgColor', cssVariable: '--otk-loading-progress-bar-bg-color', defaultValue: '#333333', inputType: 'color', idSuffix: 'loading-progress-bg' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Progress Bar Fill:", storageKey: 'loadingProgressBarFillColor', cssVariable: '--otk-loading-progress-bar-fill-color', defaultValue: '#4CAF50', inputType: 'color', idSuffix: 'loading-progress-fill' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Progress Bar Text:", storageKey: 'loadingProgressBarTextColor', cssVariable: '--otk-loading-progress-bar-text-color', defaultValue: '#ffffff', inputType: 'color', idSuffix: 'loading-progress-text' }));
 
     // --- Custom Themes Section ---
-    themeOptionsContainer.appendChild(createDivider());
-    themeOptionsContainer.appendChild(createSectionHeading('Custom Themes'));
+    // themeOptionsContainer.appendChild(createDivider()); // Removed divider
+    const customThemesSectionHeading = createSectionHeading('Custom Themes');
+    customThemesSectionHeading.style.marginTop = "22px"; // Increased top margin
+    customThemesSectionHeading.style.marginBottom = "18px"; // Increased bottom margin
+    themeOptionsContainer.appendChild(customThemesSectionHeading);
 
     const customThemeActionsWrapper = document.createElement('div');
-    customThemeActionsWrapper.style.cssText = "display: flex; flex-direction: column; gap: 10px;";
+    customThemeActionsWrapper.style.cssText = `
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr; /* Input/Dropdown, Save/Load, Delete */
+        gap: 8px; /* Gap between rows and columns */
+        align-items: center; /* Vertically align items in each grid cell */
+    `;
 
     // Name input and Save button
     const saveThemeRow = document.createElement('div');
-    saveThemeRow.style.cssText = "display: flex; align-items: center; gap: 8px;";
+    saveThemeRow.style.cssText = "display: contents;"; // Make children direct grid items
     const newThemeNameInput = document.createElement('input');
     newThemeNameInput.type = 'text';
     newThemeNameInput.id = 'otk-custom-theme-name-input';
     newThemeNameInput.placeholder = 'Enter Theme Name';
-    newThemeNameInput.style.cssText = "flex-grow: 1; height: 25px; box-sizing: border-box; font-size: 12px;";
+    newThemeNameInput.style.cssText = "grid-column: 1 / 2; width: 100%; height: 25px; box-sizing: border-box; font-size: 12px;";
     const saveThemeButton = document.createElement('button');
     saveThemeButton.id = 'otk-save-custom-theme-btn';
-    saveThemeButton.textContent = 'Save Current Theme';
-    saveThemeButton.style.cssText = "padding: 4px 8px; font-size: 11px; height: 25px;";
+    saveThemeButton.textContent = 'Save Theme'; // Changed text
+    saveThemeButton.style.cssText = "grid-column: 2 / 4; width: 100%; padding: 4px 8px; font-size: 11px; height: 25px; box-sizing: border-box;";
     saveThemeRow.appendChild(newThemeNameInput);
     saveThemeRow.appendChild(saveThemeButton);
     customThemeActionsWrapper.appendChild(saveThemeRow);
 
     // Dropdown, Load, and Delete buttons
     const manageThemeRow = document.createElement('div');
-    manageThemeRow.style.cssText = "display: flex; align-items: center; gap: 8px;";
+    manageThemeRow.style.cssText = "display: contents;"; // Make children direct grid items
     const customThemesDropdown = document.createElement('select');
     customThemesDropdown.id = 'otk-custom-themes-dropdown';
-    customThemesDropdown.style.cssText = "flex-grow: 1; height: 25px; box-sizing: border-box; font-size: 12px;";
+    customThemesDropdown.style.cssText = "grid-column: 1 / 2; width: 100%; height: 25px; box-sizing: border-box; font-size: 12px;";
     const loadThemeButton = document.createElement('button');
     loadThemeButton.id = 'otk-load-custom-theme-btn';
     loadThemeButton.textContent = 'Load';
-    loadThemeButton.style.cssText = "padding: 4px 8px; font-size: 11px; height: 25px;";
+    loadThemeButton.style.cssText = "grid-column: 2 / 3; width: 100%; padding: 4px 8px; font-size: 11px; height: 25px; box-sizing: border-box;";
     const deleteThemeButton = document.createElement('button');
     deleteThemeButton.id = 'otk-delete-custom-theme-btn';
     deleteThemeButton.textContent = 'Delete';
-    deleteThemeButton.style.cssText = "padding: 4px 8px; font-size: 11px; height: 25px; background-color: #803333;"; // Dark red
+    deleteThemeButton.style.cssText = "grid-column: 3 / 4; width: 100%; padding: 4px 8px; font-size: 11px; height: 25px; box-sizing: border-box; background-color: #803333;"; // Dark red
     deleteThemeButton.onmouseover = () => deleteThemeButton.style.backgroundColor = '#a04444';
     deleteThemeButton.onmouseout = () => deleteThemeButton.style.backgroundColor = '#803333';
 
