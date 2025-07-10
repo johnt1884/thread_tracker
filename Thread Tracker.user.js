@@ -3889,7 +3889,6 @@ function handleIntersection(entries, observerInstance) {
         //    entries.forEach(entry => {
         //        if (entry.isIntersecting) { // This 'if' is from my analysis, not the actual code block that had the error.
         //            const wrapper = entry.target;
-        //            const iframe = wrapper.querySelector('iframe'); // First
         //            const iframe = wrapper.querySelector('iframe'); // Second - THIS IS THE ERROR
         //
         //            if (iframe) { ...
@@ -3932,7 +3931,6 @@ function handleIntersection(entries, observerInstance) {
                     }
                 }
             }
-        // REMOVED EXTRA CLOSING BRACE HERE
     });
 }
 
@@ -4678,7 +4676,7 @@ function setupOptionsWindow() {
     function createSectionHeading(text) {
         const h = document.createElement('h5');
         h.textContent = text;
-        h.style.cssText = "margin-top: 8px; margin-bottom: 8px; color: # ઓફ ઓફ ઓફ; font-size: 13px; border-bottom: 1px solid #444; padding-bottom: 4px; font-weight: bold;";
+        h.style.cssText = "margin-top: 8px; margin-bottom: 8px; color: #cccccc; font-size: 13px; border-bottom: 1px solid #444; padding-bottom: 4px; font-weight: bold;";
         return h;
     }
 
