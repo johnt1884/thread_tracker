@@ -2165,7 +2165,14 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
             textElement.style.whiteSpace = 'pre-wrap'; // Preserve line breaks
             textElement.style.overflowWrap = 'break-word'; // Allow breaking normally unbreakable words
             textElement.style.wordBreak = 'normal'; // Prefer whole word wrapping
-            textElement.style.fontSize = 'var(--otk-viewer-message-font-size)'; // Apply font size variable
+            // Apply depth-specific font size for default layout
+            if (isTopLevelMessage) {
+                textElement.style.fontSize = 'var(--otk-msg-depth0-content-font-size)';
+            } else if (currentDepth === 1) {
+                textElement.style.fontSize = 'var(--otk-msg-depth1-content-font-size)';
+            } else { // currentDepth >= 2
+                textElement.style.fontSize = 'var(--otk-msg-depth2plus-content-font-size)';
+            }
 
             if (message.text && typeof message.text === 'string') {
                 const lines = message.text.split('\n');
@@ -4125,12 +4132,28 @@ function applyThemeSettings() {
         }
     });
 
-    // Viewer Message Font Size
-    if (settings.viewerMessageFontSize) {
-        document.documentElement.style.setProperty('--otk-viewer-message-font-size', settings.viewerMessageFontSize);
-        const input = document.getElementById('otk-fontsize-message-text');
-        if (input) input.value = settings.viewerMessageFontSize.replace('px','');
-    }
+    // Viewer Message Font Size - Global (now deprecated for content, kept if used elsewhere or as a base)
+    // if (settings.viewerMessageFontSize) { // Logic for this old global setting is removed
+    //     document.documentElement.style.setProperty('--otk-viewer-message-font-size', settings.viewerMessageFontSize);
+    //     // const input = document.getElementById('otk-fontsize-message-text'); // Old input ID
+    //     // if (input) input.value = settings.viewerMessageFontSize.replace('px','');
+    // }
+
+    // New Depth-Specific Content Font Sizes
+    ['Depth 0', 'Depth 1', 'Depth 2+'].forEach((label, index) => {
+        const depthKeyPart = index === 2 ? '2plus' : index.toString();
+        const storageKey = `msgDepth${depthKeyPart}ContentFontSize`; // e.g., msgDepth0ContentFontSize
+        const cssVar = `--otk-msg-depth${depthKeyPart}-content-font-size`; // e.g., --otk-msg-depth0-content-font-size
+        const inputId = `otk-msg-depth${depthKeyPart}-content-fontsize`; // e.g., otk-msg-depth0-content-fontsize
+
+        if (settings[storageKey]) {
+            document.documentElement.style.setProperty(cssVar, settings[storageKey]);
+            const inputElement = document.getElementById(inputId);
+            if (inputElement) {
+                inputElement.value = settings[storageKey].replace('px', '');
+            }
+        }
+    });
 
     // Message Layout Dropdown
     if (settings.otkMessageLayoutStyle) { // Check if the setting exists
@@ -4327,7 +4350,7 @@ function setupOptionsWindow() {
         position: fixed;
         top: 100px;
         left: 100px;
-        width: 480px; /* Increased width for better alignment */
+        width: 545px; /* Further Increased width for scrollbar clearance (540px + 5px) */
         min-height: 150px; /* Minimum height when collapsed */
         max-height: 550px; /* Maximum height when expanded (title + theme heading + theme options container max-height + paddings) */
         background-color: #2c2c2c; /* Slightly lighter than GUI for distinction */
@@ -4373,9 +4396,10 @@ function setupOptionsWindow() {
     const contentArea = document.createElement('div');
     contentArea.id = 'otk-options-content';
     contentArea.style.cssText = `
-        padding: 15px;
+        padding: 15px 10px 15px 20px; /* Top, Right (10px), Bottom, Left (20px) */
         flex-grow: 1; /* Allows content to fill space */
         overflow-y: auto; /* If content gets too long */
+        box-sizing: border-box; /* Ensure padding is included in width/height */
         /* display: flex; Will be handled by section container */
         /* flex-direction: column; */
         /* gap: 10px; */
@@ -4394,6 +4418,8 @@ function setupOptionsWindow() {
         flex-direction: column;
         gap: 10px; /* Space between general option groups */
         margin-bottom: 15px; /* Space before the theme section */
+        padding-right: 5px; /* Added right padding */
+        box-sizing: border-box; /* Ensure padding is included if not already part of a width calc */
     `;
     contentArea.appendChild(generalSettingsSection); // Add general settings section first
 
@@ -4402,24 +4428,25 @@ function setupOptionsWindow() {
 
     // --- Tracked Keyword(s) Option ---
     const trackedKeywordsGroup = document.createElement('div');
-    // Apply CSS Grid styling
-    trackedKeywordsGroup.style.cssText = "display: grid; grid-template-columns: 165px 1fr; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
+    // Apply Flexbox styling similar to createThemeOptionRow
+    trackedKeywordsGroup.style.cssText = "display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
 
     const trackedKeywordsLabel = document.createElement('label');
     trackedKeywordsLabel.textContent = "Tracked Keyword(s):";
     trackedKeywordsLabel.htmlFor = 'otk-tracked-keywords-input';
-    // Ensure label is explicitly in grid column 1
-    trackedKeywordsLabel.style.cssText = "min-width: 160px; text-align: right; /* margin-right: 5px; gap handles spacing */ font-size: 12px; grid-column: 1;";
+    // Apply Flexbox label styling
+    trackedKeywordsLabel.style.cssText = "font-size: 12px; text-align: left; flex-basis: 230px; flex-shrink: 0;";
+
+    const trackedKeywordsControlsWrapper = document.createElement('div');
+    trackedKeywordsControlsWrapper.style.cssText = "display: flex; flex-grow: 1; align-items: center; gap: 8px; min-width: 0;";
 
     const trackedKeywordsInput = document.createElement('input');
     trackedKeywordsInput.type = 'text';
     trackedKeywordsInput.id = 'otk-tracked-keywords-input';
     trackedKeywordsInput.placeholder = "e.g., otk, item2, phrase three";
-    // Input takes full width of its grid cell (1fr)
-    trackedKeywordsInput.style.cssText = "width: 100%; height: 25px; box-sizing: border-box; font-size: 12px; grid-column: 2;";
+    // Explicitly set width to 100% of its parent wrapper and right-align text.
+    trackedKeywordsInput.style.cssText = "width: 100%; height: 25px; box-sizing: border-box; font-size: 12px; text-align: right;";
     trackedKeywordsInput.value = localStorage.getItem(OTK_TRACKED_KEYWORDS_KEY) || "otk"; // Load saved value or default
-
-    // Wrapper is not needed with CSS Grid here
 
     trackedKeywordsInput.addEventListener('change', () => { // Save on change (after blur or Enter)
         const valueToSave = trackedKeywordsInput.value.trim();
@@ -4431,113 +4458,105 @@ function setupOptionsWindow() {
             trackedKeywordsInput.value = "otk"; // Reflect default in input
             consoleLog(`Tracked keywords reset to default: "otk"`);
         }
-        // Alert or indication that a page refresh might be needed for scanCatalog to pick up new words immediately
-        // For now, just saving. User would typically refresh data or page.
     });
 
+    trackedKeywordsControlsWrapper.appendChild(trackedKeywordsInput);
     trackedKeywordsGroup.appendChild(trackedKeywordsLabel);
-    trackedKeywordsGroup.appendChild(trackedKeywordsInput); // Append input directly
+    trackedKeywordsGroup.appendChild(trackedKeywordsControlsWrapper);
     generalSettingsSection.appendChild(trackedKeywordsGroup);
 
     // --- Background Update Frequency Option ---
     const bgUpdateFreqGroup = document.createElement('div');
-    // Apply CSS Grid styling
-    bgUpdateFreqGroup.style.cssText = "display: grid; grid-template-columns: 165px 1fr; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
+    // Apply Flexbox styling
+    bgUpdateFreqGroup.style.cssText = "display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
 
     const bgUpdateFreqLabel = document.createElement('label');
     bgUpdateFreqLabel.textContent = "Update Frequency (min >= 2.0):"; // Updated label
     bgUpdateFreqLabel.htmlFor = 'otk-bg-update-freq-input';
-    // Ensure label is explicitly in grid column 1
-    bgUpdateFreqLabel.style.cssText = "min-width: 160px; text-align: right; /* margin-right: 5px; gap handles spacing */ font-size: 12px; grid-column: 1;";
+    // Apply Flexbox label styling
+    bgUpdateFreqLabel.style.cssText = "font-size: 12px; text-align: left; flex-basis: 230px; flex-shrink: 0;";
+
+    const bgUpdateFreqControlsWrapper = document.createElement('div');
+    // Removed justify-content: flex-end;
+    bgUpdateFreqControlsWrapper.style.cssText = "display: flex; flex-grow: 1; align-items: center; gap: 8px; min-width: 0;";
 
     const bgUpdateFreqInput = document.createElement('input');
     bgUpdateFreqInput.type = 'number';
     bgUpdateFreqInput.id = 'otk-bg-update-freq-input';
     bgUpdateFreqInput.min = '2.0'; // UI min in minutes (120 seconds)
-    // No max attribute for UI
-    bgUpdateFreqInput.step = '0.5'; // Step by half a minute for simplicity, can be 0.1
-    // Input styling for grid column 2 - allow it to take available space but also set a max-width if desired, or start alignment
-    bgUpdateFreqInput.style.cssText = "width: 70px; height: 25px; box-sizing: border-box; font-size: 12px; grid-column: 2; justify-self: start;";
+    bgUpdateFreqInput.step = '0.5';
+    // Changed to width: 100% and text-align: right
+    bgUpdateFreqInput.style.cssText = "width: 100%; height: 25px; box-sizing: border-box; font-size: 12px; text-align: right;";
 
-    // Wrapper is not needed with CSS Grid here
-
-    // Load stored value (in seconds), convert to minutes for display. Default to 120s (2.0 min).
     let initialStoredFreqSeconds = parseInt(localStorage.getItem(OTK_BG_UPDATE_FREQ_SECONDS_KEY) || "120", 10);
-    // Ensure initial value respects the new minimum if an old, smaller value was stored
     if (isNaN(initialStoredFreqSeconds) || initialStoredFreqSeconds < 120) {
         initialStoredFreqSeconds = 120;
     }
-    // An internal max for display purposes isn't strictly necessary if there's no UI max,
-    // but if a very large number of seconds was stored, it might look odd.
-    // We'll cap it at a large but reasonable number of minutes for display if needed, e.g. 1440 min (1 day)
-    // For now, just convert, the save logic will handle true upper cap.
     bgUpdateFreqInput.value = (initialStoredFreqSeconds / 60).toFixed(1);
-
 
     bgUpdateFreqInput.addEventListener('change', () => {
         let inputMinutes = parseFloat(bgUpdateFreqInput.value);
-        const minSecondsStorage = 120; // 2 minutes in seconds
-        const maxSecondsStorage = 3600; // 1 hour in seconds (internal cap)
+        const minSecondsStorage = 120;
+        const maxSecondsStorage = 3600;
         let newFrequencySecondsToStore;
 
-        if (isNaN(inputMinutes) || inputMinutes < (minSecondsStorage / 60)) { // Check against UI min equivalent
-            newFrequencySecondsToStore = 120; // Default to 120s (2 min) if input is invalid or below UI min
+        if (isNaN(inputMinutes) || inputMinutes < (minSecondsStorage / 60)) {
+            newFrequencySecondsToStore = 120;
         } else {
             newFrequencySecondsToStore = Math.round(inputMinutes * 60);
         }
 
-        // Clamp the seconds value for storage
         if (newFrequencySecondsToStore < minSecondsStorage) {
             newFrequencySecondsToStore = minSecondsStorage;
         } else if (newFrequencySecondsToStore > maxSecondsStorage) {
             newFrequencySecondsToStore = maxSecondsStorage;
         }
 
-        // Update the input field to reflect the (potentially clamped and reconverted) value in minutes
         bgUpdateFreqInput.value = (newFrequencySecondsToStore / 60).toFixed(1);
-
         localStorage.setItem(OTK_BG_UPDATE_FREQ_SECONDS_KEY, newFrequencySecondsToStore.toString());
         consoleLog(`Background update frequency saved as: ${newFrequencySecondsToStore} seconds. UI shows: ${bgUpdateFreqInput.value} min. Restarting interval.`);
         stopBackgroundRefresh();
-        startBackgroundRefresh(); // Will now use the new value from localStorage
+        startBackgroundRefresh();
     });
 
+    bgUpdateFreqControlsWrapper.appendChild(bgUpdateFreqInput);
     bgUpdateFreqGroup.appendChild(bgUpdateFreqLabel);
-    bgUpdateFreqGroup.appendChild(bgUpdateFreqInput); // Append input directly
+    bgUpdateFreqGroup.appendChild(bgUpdateFreqControlsWrapper);
     generalSettingsSection.appendChild(bgUpdateFreqGroup);
 
     // --- Debugging Toggle Option ---
     const debugToggleGroup = document.createElement('div');
-    // Apply CSS Grid styling
-    debugToggleGroup.style.cssText = "display: grid; grid-template-columns: 165px 1fr; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
+    // Apply Flexbox styling
+    debugToggleGroup.style.cssText = "display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
 
     const debugToggleLabel = document.createElement('label');
     debugToggleLabel.textContent = "Enable Console Debugging:";
     debugToggleLabel.htmlFor = 'otk-debug-mode-checkbox';
-    // Ensure label is explicitly in grid column 1
-    debugToggleLabel.style.cssText = "min-width: 160px; text-align: right; /* margin-right: 5px; gap handles spacing */ font-size: 12px; grid-column: 1;";
+    // Apply Flexbox label styling
+    debugToggleLabel.style.cssText = "font-size: 12px; text-align: left; flex-basis: 230px; flex-shrink: 0;";
+
+    const debugToggleControlsWrapper = document.createElement('div');
+    debugToggleControlsWrapper.style.cssText = "display: flex; flex-grow: 1; align-items: center; gap: 8px; min-width: 0; justify-content: flex-end;";
 
     const debugToggleCheckbox = document.createElement('input');
     debugToggleCheckbox.type = 'checkbox';
     debugToggleCheckbox.id = 'otk-debug-mode-checkbox';
-    // Checkbox styling for grid column 2 - use justify-self to align it left within its cell
-    debugToggleCheckbox.style.cssText = "height: 16px; width: 16px; grid-column: 2; justify-self: start;";
+    // Specific styling for checkbox
+    debugToggleCheckbox.style.cssText = "height: 16px; width: 16px;";
     debugToggleCheckbox.checked = DEBUG_MODE;
-
-    // Wrapper is not needed with CSS Grid here
 
     debugToggleCheckbox.addEventListener('change', () => {
         DEBUG_MODE = debugToggleCheckbox.checked;
         localStorage.setItem(DEBUG_MODE_KEY, DEBUG_MODE.toString());
         consoleLog(`Debug mode ${DEBUG_MODE ? 'enabled' : 'disabled'}.`);
-        // Re-log this message with the new setting, if it's now enabled, it will show. If disabled, it won't.
         if (DEBUG_MODE) {
              console.log('[OTK Tracker]', `Debug mode explicitly enabled via UI.`);
         }
     });
 
+    debugToggleControlsWrapper.appendChild(debugToggleCheckbox);
     debugToggleGroup.appendChild(debugToggleLabel);
-    debugToggleGroup.appendChild(debugToggleCheckbox); // Append checkbox directly
+    debugToggleGroup.appendChild(debugToggleControlsWrapper);
     generalSettingsSection.appendChild(debugToggleGroup);
 
 
@@ -4555,10 +4574,10 @@ function setupOptionsWindow() {
         display: flex;
         flex-direction: column;
         gap: 10px; /* Space between color option groups */
-        max-height: 330px; /* Max height for the theme options area */
-        overflow-y: auto; /* Enable vertical scrollbar */
-        padding-right: 10px; /* Space for scrollbar */
-        padding-left: 5px; /* Minor padding for content */
+        /* max-height: 330px; */ /* Max height for the theme options area - Let content dictate or use min-height */
+        /* overflow-y: auto; */ /* Enable vertical scrollbar - Let themeOptionsContainer handle scroll */
+        /* padding-right: 10px; */ /* Space for scrollbar - Removed */
+        /* padding-left: 5px; */ /* Minor padding for content - Removed */
     `;
     // Add a heading for the section (optional)
     const themeSectionHeading = document.createElement('h4');
@@ -4584,8 +4603,9 @@ function setupOptionsWindow() {
         /* gap: 10px; Will be handled by margins/padding of new structure or individual rows */
         max-height: 300px; /* Adjusted from themeSection's previous max-height */
         overflow-y: auto;
-        padding-right: 10px; /* Space for scrollbar */
-        padding-left: 5px; /* Minor padding for content */
+        padding-right: 20px; /* Further Increased right padding for scrollbar clearance (15px + 5px) */
+        box-sizing: border-box; /* Ensure padding is included */
+        /* padding-left: 5px; */ /* Minor padding for content - Remains Removed, covered by contentArea */
     `;
     themeSection.appendChild(themeOptionsContainer);
 
@@ -4649,6 +4669,7 @@ function setupOptionsWindow() {
                 height: 25px;
                 box-sizing: border-box;
                 font-size: 12px;
+                text-align: right;
             `;
         }
 
@@ -4672,6 +4693,10 @@ function setupOptionsWindow() {
                 box-sizing: border-box;
                 font-size: 12px;
             `;
+            // Add text-align: right for number inputs created by createThemeOptionRow
+            if (options.inputType === 'number') {
+                mainInput.style.textAlign = 'right';
+            }
             if (options.min !== undefined) mainInput.min = options.min;
             if (options.max !== undefined) mainInput.max = options.max;
         }
@@ -4792,7 +4817,7 @@ function setupOptionsWindow() {
 
     function createDivider() {
         const hr = document.createElement('hr');
-        hr.style.cssText = "width: 98%; border: none; border-top: 1px solid #555; margin: 12px auto 8px auto;";
+        hr.style.cssText = "width: 100%; border: none; border-top: 1px solid #555; margin: 12px 0 8px 0;";
         return hr;
     }
 
@@ -4877,6 +4902,9 @@ function setupOptionsWindow() {
         height: 25px;
         box-sizing: border-box;
         font-size: 12px;
+        text-align: center; /* Attempt to center-align selected text */
+        text-align-last: center; /* For some browsers */
+        /* direction: ltr; */ /* Ensure default or ltr if issues with arrow */
     `;
 
     const layoutOptions = [
@@ -4912,27 +4940,41 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Messages Text:", storageKey: 'newMessagesFontColor', cssVariable: '--otk-new-messages-font-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-font' }));
     // themeOptionsContainer.appendChild(createDivider()); // Removed divider
 
-    // --- Messages Section ---
-    const messagesSectionHeading = createSectionHeading('Messages');
-    messagesSectionHeading.style.marginTop = "22px"; // Increased top margin
-    messagesSectionHeading.style.marginBottom = "18px"; // Increased bottom margin
-    themeOptionsContainer.appendChild(messagesSectionHeading);
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Text Size (px):", storageKey: 'viewerMessageFontSize', cssVariable: '--otk-viewer-message-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'fontsize-message-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Background:", storageKey: 'msgDepth0BgColor', cssVariable: '--otk-msg-depth0-bg-color', defaultValue: '#343434', inputType: 'color', idSuffix: 'msg-depth0-bg' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Text:", storageKey: 'msgDepth0TextColor', cssVariable: '--otk-msg-depth0-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Header Text:", storageKey: 'msgDepth0HeaderTextColor', cssVariable: '--otk-msg-depth0-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-header-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 0 Header Underline:", storageKey: 'viewerHeaderBorderColor', cssVariable: '--otk-viewer-header-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'viewer-header-border' }));
+    // --- Messages Section Restructuring ---
+    // Remove old global "Messages" heading and global font size option (done by not adding them back here)
 
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Background:", storageKey: 'msgDepth1BgColor', cssVariable: '--otk-msg-depth1-bg-color', defaultValue: '#525252', inputType: 'color', idSuffix: 'msg-depth1-bg' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Text:", storageKey: 'msgDepth1TextColor', cssVariable: '--otk-msg-depth1-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Header Text:", storageKey: 'msgDepth1HeaderTextColor', cssVariable: '--otk-msg-depth1-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-header-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 1 Header Underline:", storageKey: 'viewerQuote1HeaderBorderColor', cssVariable: '--otk-viewer-quote1-header-border-color', defaultValue: '#343434', inputType: 'color', idSuffix: 'viewer-quote1-border' }));
+    // --- Depth 0 Messages Section ---
+    const depth0MessagesHeading = createSectionHeading('Depth 0 Messages');
+    depth0MessagesHeading.style.marginTop = "22px";
+    depth0MessagesHeading.style.marginBottom = "18px";
+    themeOptionsContainer.appendChild(depth0MessagesHeading);
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Font Size (px):", storageKey: 'msgDepth0ContentFontSize', cssVariable: '--otk-msg-depth0-content-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'msg-depth0-content-fontsize' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background:", storageKey: 'msgDepth0BgColor', cssVariable: '--otk-msg-depth0-bg-color', defaultValue: '#343434', inputType: 'color', idSuffix: 'msg-depth0-bg' })); // Default for original theme, new theme uses #fff
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Content Font:", storageKey: 'msgDepth0TextColor', cssVariable: '--otk-msg-depth0-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-text' })); // Default for original theme, new theme uses #333
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Font:", storageKey: 'msgDepth0HeaderTextColor', cssVariable: '--otk-msg-depth0-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-header-text' })); // Default for original theme, new theme uses #555
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Underline:", storageKey: 'viewerHeaderBorderColor', cssVariable: '--otk-viewer-header-border-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'viewer-header-border' }));
 
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Background:", storageKey: 'msgDepth2plusBgColor', cssVariable: '--otk-msg-depth2plus-bg-color', defaultValue: '#484848', inputType: 'color', idSuffix: 'msg-depth2plus-bg' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Text:", storageKey: 'msgDepth2plusTextColor', cssVariable: '--otk-msg-depth2plus-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Header Text:", storageKey: 'msgDepth2plusHeaderTextColor', cssVariable: '--otk-msg-depth2plus-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-header-text' }));
-    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Depth 2+ Header Underline:", storageKey: 'viewerQuote2plusHeaderBorderColor', cssVariable: '--otk-viewer-quote2plus-header-border-color', defaultValue: '#2a2a2a', inputType: 'color', idSuffix: 'viewer-quote2plus-border' }));
-    // themeOptionsContainer.appendChild(createDivider()); // Removed divider
+    // --- Depth 1 Messages Section ---
+    const depth1MessagesHeading = createSectionHeading('Depth 1 Messages');
+    depth1MessagesHeading.style.marginTop = "22px";
+    depth1MessagesHeading.style.marginBottom = "18px";
+    themeOptionsContainer.appendChild(depth1MessagesHeading);
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Font Size (px):", storageKey: 'msgDepth1ContentFontSize', cssVariable: '--otk-msg-depth1-content-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'msg-depth1-content-fontsize' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background:", storageKey: 'msgDepth1BgColor', cssVariable: '--otk-msg-depth1-bg-color', defaultValue: '#525252', inputType: 'color', idSuffix: 'msg-depth1-bg' })); // Default for original theme
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Content Font:", storageKey: 'msgDepth1TextColor', cssVariable: '--otk-msg-depth1-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-text' })); // Default for original theme
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Font:", storageKey: 'msgDepth1HeaderTextColor', cssVariable: '--otk-msg-depth1-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-header-text' })); // Default for original theme
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Underline:", storageKey: 'viewerQuote1HeaderBorderColor', cssVariable: '--otk-viewer-quote1-header-border-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'viewer-quote1-border' }));
+
+    // --- Depth 2+ Messages Section ---
+    const depth2plusMessagesHeading = createSectionHeading('Depth 2+ Messages');
+    depth2plusMessagesHeading.style.marginTop = "22px";
+    depth2plusMessagesHeading.style.marginBottom = "18px";
+    themeOptionsContainer.appendChild(depth2plusMessagesHeading);
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Font Size (px):", storageKey: 'msgDepth2plusContentFontSize', cssVariable: '--otk-msg-depth2plus-content-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'msg-depth2plus-content-fontsize' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background:", storageKey: 'msgDepth2plusBgColor', cssVariable: '--otk-msg-depth2plus-bg-color', defaultValue: '#484848', inputType: 'color', idSuffix: 'msg-depth2plus-bg' })); // Default for original theme
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Content Font:", storageKey: 'msgDepth2plusTextColor', cssVariable: '--otk-msg-depth2plus-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-text' })); // Default for original theme
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Font:", storageKey: 'msgDepth2plusHeaderTextColor', cssVariable: '--otk-msg-depth2plus-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-header-text' })); // Default for original theme
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Underline:", storageKey: 'viewerQuote2plusHeaderBorderColor', cssVariable: '--otk-viewer-quote2plus-header-border-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'viewer-quote2plus-border' }));
 
     // --- Options Panel Section ---
     const optionsPanelSectionHeading = createSectionHeading('Options Panel');
@@ -4966,49 +5008,63 @@ function setupOptionsWindow() {
     const customThemeActionsWrapper = document.createElement('div');
     customThemeActionsWrapper.style.cssText = `
         display: grid;
-        grid-template-columns: 2fr 1fr 1fr; /* Input/Dropdown, Save/Load, Delete */
-        gap: 8px; /* Gap between rows and columns */
-        align-items: center; /* Vertically align items in each grid cell */
+        /* Adjusted grid: Col1 (Name/Dropdown), Col2 (Save/Load), Col3 (Delete) */
+        /* Col1 width aims to leave space for Col2 to align with hex inputs */
+        grid-template-columns: calc(238px - 8px) auto auto; /* 238px = 230px label + 8px gap. Subtract internal grid gap. */
+        gap: 8px;
+        align-items: center;
     `;
 
-    // Name input and Save button
-    const saveThemeRow = document.createElement('div');
-    saveThemeRow.style.cssText = "display: contents;"; // Make children direct grid items
+    // Name input (Row 1, Col 1)
     const newThemeNameInput = document.createElement('input');
     newThemeNameInput.type = 'text';
     newThemeNameInput.id = 'otk-custom-theme-name-input';
     newThemeNameInput.placeholder = 'Enter Theme Name';
-    newThemeNameInput.style.cssText = "grid-column: 1 / 2; width: 100%; height: 25px; box-sizing: border-box; font-size: 12px;";
+    newThemeNameInput.style.cssText = "width: 100%; height: 25px; box-sizing: border-box; font-size: 12px; text-align: right;";
+    // No explicit grid-column needed if it's the first element for the first cell
+
+    // Save button (Row 1, Col 2)
     const saveThemeButton = document.createElement('button');
     saveThemeButton.id = 'otk-save-custom-theme-btn';
-    saveThemeButton.textContent = 'Save Theme'; // Changed text
-    saveThemeButton.style.cssText = "grid-column: 2 / 4; width: 100%; padding: 4px 8px; font-size: 11px; height: 25px; box-sizing: border-box;";
-    saveThemeRow.appendChild(newThemeNameInput);
-    saveThemeRow.appendChild(saveThemeButton);
-    customThemeActionsWrapper.appendChild(saveThemeRow);
+    saveThemeButton.textContent = 'Save Theme';
+    saveThemeButton.style.cssText = "width: 100%; padding: 4px 8px; font-size: 11px; height: 25px; box-sizing: border-box; grid-column: 2 / 4;"; // Span columns 2 and 3
+    // No explicit grid-column needed if it's the second element for the second cell --> This comment is now misleading, removing
 
-    // Dropdown, Load, and Delete buttons
-    const manageThemeRow = document.createElement('div');
-    manageThemeRow.style.cssText = "display: contents;"; // Make children direct grid items
+    // Dropdown (Row 2, Col 1)
     const customThemesDropdown = document.createElement('select');
     customThemesDropdown.id = 'otk-custom-themes-dropdown';
-    customThemesDropdown.style.cssText = "grid-column: 1 / 2; width: 100%; height: 25px; box-sizing: border-box; font-size: 12px;";
+    customThemesDropdown.style.cssText = "width: 100%; height: 25px; box-sizing: border-box; font-size: 12px; text-align: center; text-align-last: center;"; // Attempt to center-align
+    // Needs explicit grid-column to go to the next row in the same column
+    customThemesDropdown.style.gridColumn = '1 / 2';
+
+
+    // Load button (Row 2, Col 2)
     const loadThemeButton = document.createElement('button');
     loadThemeButton.id = 'otk-load-custom-theme-btn';
     loadThemeButton.textContent = 'Load';
-    loadThemeButton.style.cssText = "grid-column: 2 / 3; width: 100%; padding: 4px 8px; font-size: 11px; height: 25px; box-sizing: border-box;";
+    loadThemeButton.style.cssText = "width: 100%; padding: 4px 8px; font-size: 11px; height: 25px; box-sizing: border-box;";
+    loadThemeButton.style.gridColumn = '2 / 3';
+
+    // Delete button (Row 2, Col 3 - or could be Row 1, Col 3 if preferred visually)
+    // For simplicity, let's keep it with Load on Row 2 for now.
     const deleteThemeButton = document.createElement('button');
     deleteThemeButton.id = 'otk-delete-custom-theme-btn';
     deleteThemeButton.textContent = 'Delete';
-    deleteThemeButton.style.cssText = "grid-column: 3 / 4; width: 100%; padding: 4px 8px; font-size: 11px; height: 25px; box-sizing: border-box; background-color: #803333;"; // Dark red
+    deleteThemeButton.style.cssText = "width: 100%; padding: 4px 8px; font-size: 11px; height: 25px; box-sizing: border-box; background-color: #803333; color: #ffffff;"; // Dark red, white text
     deleteThemeButton.onmouseover = () => deleteThemeButton.style.backgroundColor = '#a04444';
     deleteThemeButton.onmouseout = () => deleteThemeButton.style.backgroundColor = '#803333';
+    deleteThemeButton.style.gridColumn = '3 / 4';
 
+    // Append in order for grid flow
+    customThemeActionsWrapper.appendChild(newThemeNameInput);    // R1 C1
+    customThemeActionsWrapper.appendChild(saveThemeButton);      // R1 C2 (now spans C2-C3)
+    // r1c3Placeholder is no longer needed as saveThemeButton spans its cell.
+    // const r1c3Placeholder = document.createElement('div');
+    // customThemeActionsWrapper.appendChild(r1c3Placeholder);
 
-    manageThemeRow.appendChild(customThemesDropdown);
-    manageThemeRow.appendChild(loadThemeButton);
-    manageThemeRow.appendChild(deleteThemeButton);
-    customThemeActionsWrapper.appendChild(manageThemeRow);
+    customThemeActionsWrapper.appendChild(customThemesDropdown); // R2 C1
+    customThemeActionsWrapper.appendChild(loadThemeButton);      // R2 C2
+    customThemeActionsWrapper.appendChild(deleteThemeButton);    // R2 C3
 
     themeOptionsContainer.appendChild(customThemeActionsWrapper);
 
@@ -5236,7 +5292,12 @@ function setupOptionsWindow() {
             { storageKey: 'actualStatsTextColor', cssVariable: '--otk-stats-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'actual-stats-text' },
             { storageKey: 'viewerBgColor', cssVariable: '--otk-viewer-bg-color', defaultValue: '#181818', inputType: 'color', idSuffix: 'viewer-bg' },
             { storageKey: 'guiBottomBorderColor', cssVariable: '--otk-gui-bottom-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'gui-bottom-border' },
-            { storageKey: 'viewerMessageFontSize', cssVariable: '--otk-viewer-message-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', idSuffix: 'fontsize-message-text' },
+            // { storageKey: 'viewerMessageFontSize', cssVariable: '--otk-viewer-message-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', idSuffix: 'fontsize-message-text' }, // Removed old global
+            // New Depth-Specific Content Font Sizes
+            { storageKey: 'msgDepth0ContentFontSize', cssVariable: '--otk-msg-depth0-content-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'msg-depth0-content-fontsize'},
+            { storageKey: 'msgDepth1ContentFontSize', cssVariable: '--otk-msg-depth1-content-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'msg-depth1-content-fontsize'},
+            { storageKey: 'msgDepth2plusContentFontSize', cssVariable: '--otk-msg-depth2plus-content-font-size', defaultValue: '13px', inputType: 'number', unit: 'px', min: 8, max: 24, idSuffix: 'msg-depth2plus-content-fontsize'},
+            // Existing depth-specific color options (no changes needed to these specific lines, just context for new font sizes)
             { storageKey: 'msgDepth0BgColor', cssVariable: '--otk-msg-depth0-bg-color', defaultValue: '#343434', inputType: 'color', idSuffix: 'msg-depth0-bg' },
             { storageKey: 'msgDepth0TextColor', cssVariable: '--otk-msg-depth0-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-text' },
             { storageKey: 'msgDepth0HeaderTextColor', cssVariable: '--otk-msg-depth0-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-header-text' },
@@ -5403,8 +5464,8 @@ async function main() {
             --otk-viewer-bg-color: #181818;
             --otk-gui-threadlist-title-color: #e0e0e0;
             --otk-gui-threadlist-time-color: #aaa;
-            --otk-viewer-header-border-color: #555; /* Default theme's header underline for depth 0 */
-            --otk-viewer-quote1-header-border-color: #343434; /* Default theme's header underline for depth 1 */
+            --otk-viewer-header-border-color: #000000; /* Default theme's header underline for depth 0 - Now black */
+            --otk-viewer-quote1-header-border-color: #000000; /* Default theme's header underline for depth 1 - Now black */
             /* New defaults based on example.html for the new design, now acting as global defaults */
             --otk-msg-depth0-bg-color: #ffffff; /* example.html main bg */
             --otk-msg-depth1-bg-color: rgba(0, 0, 0, 0.05); /* example.html quote1 bg */
@@ -5422,9 +5483,14 @@ async function main() {
             --otk-gui-bottom-border-color: #555; /* Default for GUI bottom border - remains common */
             --otk-cog-icon-color: #e6e6e6; /* Default for settings cog icon */
             --otk-disable-bg-font-color: #e6e6e6; /* Default for "Disable Background Updates" text */
-            --otk-viewer-quote2plus-header-border-color: #2a2a2a; /* Default for Depth 2+ message header underline */
+            --otk-viewer-quote2plus-header-border-color: #000000; /* Default for Depth 2+ message header underline - Now black */
             --otk-new-messages-divider-color: #FFD700; /* Default for new message separator line */
             --otk-new-messages-font-color: #FFD700; /* Default for new message separator text */
+
+            /* New Depth-Specific Content Font Sizes */
+            --otk-msg-depth0-content-font-size: 13px;
+            --otk-msg-depth1-content-font-size: 13px;
+            --otk-msg-depth2plus-content-font-size: 13px;
 
             /* GUI Button Colors */
             --otk-button-bg-color: #555;
@@ -5510,14 +5576,19 @@ async function main() {
             /* Default header color from shared variables, which now default to new theme's header color */
             color: var(--otk-msg-depth0-header-text-color);
             white-space: nowrap; /* From example.html */
+            border-bottom: 1px solid var(--otk-viewer-header-border-color); /* Added underline */
+            padding-bottom: 5px; /* Space for underline */
+            margin-bottom: 8px; /* Space after underline */
         }
         /* For quoted messages, the header text color might be the same or different based on depth.
            Using shared variables allows this flexibility via settings. */
         .otk-message-layout-newdesign .otk-message-container-quote-depth-1 .otk-header-div {
              color: var(--otk-msg-depth1-header-text-color);
+             border-bottom-color: var(--otk-viewer-quote1-header-border-color); /* Specific underline color for depth 1 */
         }
         .otk-message-layout-newdesign .otk-message-container-quote-depth-2 .otk-header-div {
              color: var(--otk-msg-depth2plus-header-text-color);
+             border-bottom-color: var(--otk-viewer-quote2plus-header-border-color); /* Specific underline color for depth 2+ */
         }
 
         .otk-message-layout-newdesign .otk-content-div {
@@ -5525,13 +5596,15 @@ async function main() {
             word-wrap: break-word;
             /* Default content text color from shared variables */
             color: var(--otk-msg-depth0-text-color);
-            font-size: var(--otk-viewer-message-font-size);
+            font-size: var(--otk-msg-depth0-content-font-size); /* Use new depth-specific variable */
         }
         .otk-message-layout-newdesign .otk-message-container-quote-depth-1 .otk-content-div {
              color: var(--otk-msg-depth1-text-color);
+             font-size: var(--otk-msg-depth1-content-font-size); /* Use new depth-specific variable */
         }
         .otk-message-layout-newdesign .otk-message-container-quote-depth-2 .otk-content-div {
              color: var(--otk-msg-depth2plus-text-color);
+             font-size: var(--otk-msg-depth2plus-content-font-size); /* Use new depth-specific variable */
         }
 
 
@@ -5560,6 +5633,11 @@ async function main() {
         /* This is harder to achieve with pure CSS for ::-webkit-scrollbar if not natively supported by OS/Browser settings */
         /* The transparent track and subtle thumb provide a good approximation. */
         /* True auto-hide on non-interaction often requires JavaScript or browser/OS support for overlay scrollbars. */
+
+        /* Placeholder styling */
+        #otk-custom-theme-name-input::placeholder {
+            text-align: center;
+        }
 
         /* GUI Button States */
         .otk-button--hover {
