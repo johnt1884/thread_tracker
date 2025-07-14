@@ -4,7 +4,8 @@
 // @version      2.7
 // @description  Tracks OTK threads on /b/, stores messages and media, shows top bar with colors and controls, removes inactive threads entirely
 // @match        https://boards.4chan.org/b/
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      publish.x.com
 // ==/UserScript==
 
 (function () {
@@ -26,13 +27,23 @@
     const SEEN_EMBED_URL_IDS_KEY = 'otkSeenEmbedUrlIds'; // For tracking unique text embeds for stats
     const OTK_TRACKED_KEYWORDS_KEY = 'otkTrackedKeywords'; // For user-defined keywords
     const OTK_BG_UPDATE_FREQ_SECONDS_KEY = 'otkBgUpdateFrequencySeconds'; // For background update frequency
+    const TWEET_EMBED_MODE_KEY = 'otkTweetEmbedMode'; // For tweet embed theme
+    const TWEET_CACHE_KEY = 'otkTweetCache'; // For caching tweet HTML
+    const twitterPatterns = [
+        { regex: /^(?:https?:\/\/)?(?:www\.)?(?:twitter|x)\.com\/\w+\/status\/(\d+)/, idGroup: 1 }
+    ];
+    const inlineTwitterPatterns = [
+        { regex: /(?:https?:\/\/)?(?:www\.)?(?:twitter|x)\.com\/\w+\/status\/(\d+)/, idGroup: 1 }
+    ];
 
     // --- Global variables ---
     let otkViewer = null;
+    let tweetCache = JSON.parse(localStorage.getItem(TWEET_CACHE_KEY)) || {};
     let viewerActiveImageCount = null; // For viewer-specific unique image count
     let viewerActiveVideoCount = null; // For viewer-specific unique video count
     let backgroundRefreshIntervalId = null;
     let isManualRefreshInProgress = false;
+    let isSuspended = false;
     const BACKGROUND_REFRESH_INTERVAL = 30000; // 30 seconds
     let lastViewerScrollTop = 0; // To store scroll position
     let renderedMessageIdsInViewer = new Set(); // To track IDs in viewer for incremental updates
@@ -166,8 +177,45 @@
         if (overlay) {
             overlay.style.display = 'none';
             consoleLog("Loading screen hidden.");
+
+            // As a final failsafe for the stuck button issue, find the refresh button and ensure its state is visually correct.
+            const btnRefresh = document.getElementById('otk-refresh-data-btn');
+            if (btnRefresh && !btnRefresh.disabled) {
+                btnRefresh.classList.remove('otk-button--active');
+                // Re-apply the base background color directly to override any lingering :active styles.
+                btnRefresh.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--otk-button-bg-color').trim();
+            }
         } else {
             consoleWarn("Loading screen overlay not found when trying to hide.");
+        }
+    }
+
+    function showSuspendedScreen() {
+        const overlay = document.createElement('div');
+        overlay.id = 'otk-suspended-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+            z-index: 100001;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: Verdana, sans-serif;
+            color: white;
+            font-size: 24px;
+        `;
+        overlay.textContent = 'Thread Tracker is suspended due to inactivity.';
+        document.body.appendChild(overlay);
+    }
+
+    function hideSuspendedScreen() {
+        const overlay = document.getElementById('otk-suspended-overlay');
+        if (overlay) {
+            overlay.remove();
         }
     }
 
@@ -267,7 +315,7 @@ function createYouTubeEmbedElement(videoId, timestampStr) { // Removed isInlineE
 }
 
 // Helper function for processing text segments (either append as text or handle as quote)
-function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises) {
+function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, embedWrappers, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, parentMessageId) {
     // Note: mediaLoadPromises is passed down in case quote recursion generates media elements that need tracking.
     // However, createMessageElementDOM for quotes currently passes an empty array for it. This could be enhanced.
     const quoteMatch = segment.match(quoteRegex);
@@ -300,13 +348,15 @@ function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth
         if (quotedMessageObject) {
             const quotedElement = createMessageElementDOM(
                 quotedMessageObject,
-                mediaLoadPromises, // Pass down mediaLoadPromises
+            mediaLoadPromises, // Pass down the array for mediaLoadPromises for quotes
+                embedWrappers,
                 uniqueImageViewerHashes,
                 // uniqueVideoViewerHashes, // Removed
                 quotedMessageObject.board || boardForLink,
                 false, // isTopLevelMessage = false for quotes
                 currentDepth + 1,
-                null // threadColor is not used for quoted message accents
+                null, // threadColor is not used for quoted message accents
+                parentMessageId // Pass the PARENT message's ID for the quote
             );
             if (quotedElement) {
                 textElement.appendChild(quotedElement);
@@ -323,7 +373,7 @@ function appendTextOrQuoteSegment(textElement, segment, quoteRegex, currentDepth
         if (restOfSegment.length > 0) {
             // Recursively process the rest of the segment for more quotes or text
             // This is important if a line is like ">>123 >>456 text"
-            appendTextOrQuoteSegment(textElement, restOfSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
+            appendTextOrQuoteSegment(textElement, restOfSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, parentMessageId);
         }
     } else {
         // Not a quote at the start of the segment (or not a quote at all), just plain text for this segment
@@ -387,12 +437,6 @@ function createTwitchEmbedElement(type, id, timestampStr) {
 
     wrapper.appendChild(iframe);
 
-    if (mediaIntersectionObserver) {
-        mediaIntersectionObserver.observe(wrapper);
-    } else {
-        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Twitch. Iframe will load immediately:", iframe.dataset.src);
-        iframe.src = iframe.dataset.src;
-    }
     return wrapper;
 }
 
@@ -427,14 +471,85 @@ function createStreamableEmbedElement(videoId) {
 
     wrapper.appendChild(iframe);
 
-    if (mediaIntersectionObserver) {
-        mediaIntersectionObserver.observe(wrapper);
-    } else {
-        consoleWarn("[LazyLoad] mediaIntersectionObserver not ready for Streamable. Iframe will load immediately:", iframe.dataset.src);
-        iframe.src = iframe.dataset.src;
-    }
     return wrapper;
 }
+
+
+function createTweetEmbedElement(tweetId) {
+    const embedMode = localStorage.getItem('otk-tweet-embed-mode') || 'default';
+    if (embedMode === 'disabled') {
+        const disabledSpan = document.createElement('span');
+        disabledSpan.style.display = 'none';
+        return disabledSpan;
+    }
+
+    const cacheKey = `${tweetId}-${embedMode}`;
+    const embedContainer = document.createElement('div');
+    embedContainer.className = 'otk-tweet-embed';
+    embedContainer.style.display = 'inline-block';
+    embedContainer.style.minHeight = '100px';
+
+    const processTweet = () => {
+        if (tweetCache[cacheKey]) {
+            embedContainer.innerHTML = tweetCache[cacheKey];
+            if (window.twttr && window.twttr.widgets) {
+                window.twttr.widgets.load(embedContainer);
+            }
+            return;
+        }
+
+        const embedUrl = `https://publish.x.com/oembed?url=https://twitter.com/any/status/${tweetId}&theme=${embedMode}&omit_script=true`;
+        GM_xmlhttpRequest({
+            method: "GET",
+            url: embedUrl,
+            onload: function(response) {
+                try {
+                    const data = JSON.parse(response.responseText);
+                    if (data.html) {
+                        tweetCache[cacheKey] = data.html;
+                        localStorage.setItem('otk-tweet-cache', JSON.stringify(tweetCache));
+embedContainer.innerHTML = data.html;
+
+                        const tweetObserver = new IntersectionObserver((entries, observer) => {
+                            entries.forEach(entry => {
+                                if (entry.isIntersecting) {
+                                    if (window.twttr && window.twttr.widgets) {
+                                        window.twttr.widgets.load(entry.target);
+                                        observer.unobserve(entry.target);
+                                    }
+                                }
+                            });
+                        });
+                        tweetObserver.observe(embedContainer);
+                    } else {
+                        embedContainer.textContent = "[Tweet not found]";
+                    }
+                } catch (e) {
+                    embedContainer.textContent = "[Tweet parse error]";
+                    console.error("Error parsing tweet embed JSON", e);
+                }
+            },
+            onerror: function(err) {
+                embedContainer.textContent = "[Tweet fetch error]";
+                console.error("Error loading tweet embed:", err);
+            }
+        });
+    };
+
+    if (window.twttr && window.twttr.widgets) {
+        processTweet();
+    } else {
+        const script = document.createElement("script");
+        script.src = "https://platform.twitter.com/widgets.js";
+        script.onload = () => {
+            processTweet();
+        };
+        document.head.appendChild(script);
+    }
+
+    return embedContainer;
+}
+
 
 
     // --- Data Handling & Utility Functions ---
@@ -455,9 +570,9 @@ function createStreamableEmbedElement(videoId) {
 
     function getAllMessagesSorted() {
         let allMessages = [];
-        for (const threadId in messagesByThreadId) {
-            // Now includes messages from all threads for which we have data, not just active ones
-            if (messagesByThreadId.hasOwnProperty(threadId)) {
+        const allThreadIds = Object.keys(messagesByThreadId);
+        for (const threadId of allThreadIds) {
+            if (messagesByThreadId.hasOwnProperty(threadId) && Array.isArray(messagesByThreadId[threadId])) {
                 allMessages = allMessages.concat(messagesByThreadId[threadId]);
             }
         }
@@ -663,38 +778,25 @@ function createStreamableEmbedElement(videoId) {
             font-size: 11px;
             display: flex;
             flex-direction: column;
-            align-items: center; /* This centers the span blocks */
-            width: fit-content; /* Make block only as wide as its content */
-            margin: 0 auto; /* Center the block itself if parent is wider */
+            align-items: flex-start;
+            width: fit-content;
+            margin: 0 0 0 -20px;
         `;
 
-        const threadsTrackedStat = document.createElement('span');
+        const threadsTrackedStat = document.createElement('div');
         threadsTrackedStat.id = 'otk-threads-tracked-stat';
-        threadsTrackedStat.textContent = 'Live Threads: 0';
-        threadsTrackedStat.style.textAlign = 'left';
-        threadsTrackedStat.style.minWidth = '150px';
-        threadsTrackedStat.style.color = 'var(--otk-stats-text-color)';
+        threadsTrackedStat.style.display = 'flex';
 
-        const totalMessagesStat = document.createElement('span');
+        const totalMessagesStat = document.createElement('div');
         totalMessagesStat.id = 'otk-total-messages-stat';
-        totalMessagesStat.textContent = 'Total Messages: 0';
-        totalMessagesStat.style.textAlign = 'left';
-        totalMessagesStat.style.minWidth = '150px';
-        totalMessagesStat.style.color = 'var(--otk-stats-text-color)';
 
-        const localImagesStat = document.createElement('span');
+        const localImagesStat = document.createElement('div');
         localImagesStat.id = 'otk-local-images-stat';
-        localImagesStat.textContent = 'Local Images: 0';
-        localImagesStat.style.textAlign = 'left';
-        localImagesStat.style.minWidth = '150px';
-        localImagesStat.style.color = 'var(--otk-stats-text-color)';
+        localImagesStat.style.display = 'flex';
 
-        const localVideosStat = document.createElement('span');
+        const localVideosStat = document.createElement('div');
         localVideosStat.id = 'otk-local-videos-stat';
-        localVideosStat.textContent = 'Local Videos: 0';
-        localVideosStat.style.textAlign = 'left';
-        localVideosStat.style.minWidth = '150px';
-        localVideosStat.style.color = 'var(--otk-stats-text-color)';
+        localVideosStat.style.display = 'flex';
 
         otkStatsDisplay.appendChild(threadsTrackedStat);
         otkStatsDisplay.appendChild(totalMessagesStat);
@@ -924,6 +1026,20 @@ function createStreamableEmbedElement(videoId) {
         return String(num).padStart(length, '0');
     }
 
+    function animateCounter(element, start, end, duration) {
+            element.style.color = 'var(--otk-background-updates-stats-text-color)';
+        let startTimestamp = null;
+        const step = (timestamp) => {
+            if (!startTimestamp) startTimestamp = timestamp;
+            const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+            element.textContent = ` (+${Math.floor(progress * (end - start) + start)} new)`;
+            if (progress < 1) {
+                window.requestAnimationFrame(step);
+            }
+        };
+        window.requestAnimationFrame(step);
+    }
+
     function hexToRgbParts(hex) {
         if (!hex) return '0,0,0'; // Default to black if invalid input
         let shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])$/i;
@@ -968,7 +1084,7 @@ function createStreamableEmbedElement(videoId) {
     }
 
     // --- Core Logic: Rendering, Fetching, Updating ---
-    function renderThreadList() {
+    function renderThreadList(liveThreadIds) {
         const threadDisplayContainer = document.getElementById('otk-thread-display-container');
         if (!threadDisplayContainer) {
             consoleError('Thread display container not found.');
@@ -986,7 +1102,7 @@ function createStreamableEmbedElement(videoId) {
         }
 
         // Prepare display objects, ensuring messages exist for titles/times
-        const threadDisplayObjects = activeThreads.map(threadId => {
+        const threadDisplayObjects = liveThreadIds.map(threadId => {
             const messages = messagesByThreadId[threadId] || [];
             let title = `Thread ${threadId}`; // Default title
             let firstMessageTime = null;
@@ -1320,18 +1436,8 @@ function createStreamableEmbedElement(videoId) {
         // Use a slight delay to ensure the loading screen renders before heavy processing
         await new Promise(resolve => setTimeout(resolve, 50));
 
-        // Clear state for full rebuild (using global sets)
-        renderedMessageIdsInViewer.clear();
-        uniqueImageViewerHashes.clear(); // Now clearing the global set
-        // uniqueVideoViewerHashes.clear(); // Removed as the set itself will be removed
-        viewerTopLevelAttachedVideoHashes.clear(); // Clear new set for attached videos in top-level messages
-        viewerTopLevelEmbedIds.clear(); // Clear new set for embeds in top-level messages
-        renderedFullSizeImageHashes.clear(); // Clear for new viewer session
-        consoleLog("[renderMessagesInViewer] Cleared renderedMessageIdsInViewer, unique image hashes, top-level video tracking sets, and renderedFullSizeImageHashes for full rebuild.");
-
-        otkViewer.innerHTML = ''; // Clear previous content
-
         const allMessages = getAllMessagesSorted();
+        const newMessages = allMessages.filter(m => !renderedMessageIdsInViewer.has(m.id));
         if (!allMessages || allMessages.length === 0) {
             otkViewer.textContent = 'No messages found to display.'; // User-friendly message
             consoleWarn(`No messages to render in viewer.`);
@@ -1366,34 +1472,11 @@ function createStreamableEmbedElement(videoId) {
         // (This will be a separate change if current diff doesn't cover that move) - *Actually, previous diff added it inside main, let's adjust that assumption.*
         // For now, let's assume it's available. If ReferenceError, we'll move it.
 
-        const observerOptions = {
-            root: messagesContainer, // THIS IS THE KEY: root is the scrollable container
+        mediaIntersectionObserver = new IntersectionObserver(handleIntersection, {
+            root: messagesContainer,
             rootMargin: '0px 0px 300px 0px',
             threshold: 0.01
-        };
-
-        // Re-using the handleIntersection from main's scope (or it needs to be global)
-        // If handleIntersection is defined inside main, it won't be accessible here directly unless passed or global.
-        // Let's assume for now it WILL be made accessible (e.g. defined at IIFE scope).
-        // The previous diff put handleIntersection in main, so this will cause an error.
-        // I will need to adjust the location of handleIntersection definition.
-        // For this step, I will proceed assuming it's accessible.
-        // The actual creation:
-        // mediaIntersectionObserver = new IntersectionObserver(handleIntersection, observerOptions);
-        // consoleLog('[LazyLoad] Initialized new mediaIntersectionObserver for messagesContainer.');
-        // This needs `handleIntersection` to be in scope. The previous diff added it inside `main`.
-        // I will adjust the previous diff in my mind and assume `handleIntersection` is now at the IIFE's top level scope.
-        // So, the following line should work under that assumption:
-
-        // Re-evaluating: The `handleIntersection` function was defined inside `main`.
-        // It's better to define it at a higher scope if it's to be used by `renderMessagesInViewer`
-        // and potentially other functions. Let's define it at the IIFE scope.
-        // This means I need a step to move `handleIntersection` first.
-        // For now, I'll put a placeholder here and then make a specific change for `handleIntersection`.
-
-        // Now that handleIntersection is at IIFE scope, this should work:
-        mediaIntersectionObserver = new IntersectionObserver(handleIntersection, observerOptions);
-        consoleLog('[LazyLoad] Initialized new mediaIntersectionObserver for messagesContainer.');
+        });
         messagesContainer.style.cssText = `
             position: absolute;
             top: 0;
@@ -1405,25 +1488,27 @@ function createStreamableEmbedElement(videoId) {
             box-sizing: border-box;
             /* width and height are now controlled by absolute positioning */
         `;
-        // Note: otk-messages-container now fills otk-viewer and handles all padding and scrolling.
-        // otkViewer has 10px top/bottom padding, so messagesContainer effectively has that spacing.
+        otkViewer.appendChild(messagesContainer);
 
-        const totalMessagesToRender = allMessages.length;
+        const totalMessagesToRender = newMessages.length;
         let messagesProcessedInViewer = 0;
         let imagesFoundInViewer = 0;
         let videosFoundInViewer = 0;
         const mediaLoadPromises = [];
+        const embedWrappers = [];
         const updateInterval = Math.max(1, Math.floor(totalMessagesToRender / 20)); // Update progress roughly 20 times or every message
 
         for (let i = 0; i < totalMessagesToRender; i++) {
-            const message = allMessages[i];
+            const message = newMessages[i];
             renderedMessageIdsInViewer.add(message.id);
 
             const boardForLink = message.board || 'b';
             const threadColor = getThreadColor(message.originalThreadId);
 
-            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor);
-            messagesContainer.appendChild(messageElement);
+            const messageElement = createMessageElementDOM(message, mediaLoadPromises, embedWrappers, uniqueImageViewerHashes, boardForLink, true, 0, threadColor, null); // Top-level messages have no parent
+            if (messageElement) {
+                messagesContainer.appendChild(messageElement);
+            }
 
             messagesProcessedInViewer++;
 
@@ -1438,10 +1523,7 @@ function createStreamableEmbedElement(videoId) {
 
             if (messagesProcessedInViewer % updateInterval === 0 || messagesProcessedInViewer === totalMessagesToRender) {
                 let currentProgress = (messagesProcessedInViewer / totalMessagesToRender) * 90; // Up to 90% for this stage
-                let detailsStr = `Processing message ${messagesProcessedInViewer} of ${totalMessagesToRender}...`;
-                if (imagesFoundInViewer > 0 || videosFoundInViewer > 0) {
-                    detailsStr += ` Media: ${imagesFoundInViewer} imgs, ${videosFoundInViewer} vids.`;
-                }
+                let detailsStr = `Rendering messages (${messagesProcessedInViewer}/${totalMessagesToRender})...`; // Simplified
                 updateLoadingProgress(currentProgress, detailsStr);
             }
         }
@@ -1455,6 +1537,14 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
 // updateDisplayedStatistics(); // Refresh stats display -- MOVED TO AFTER PROMISES
 
         Promise.all(mediaLoadPromises).then(() => {
+            embedWrappers.forEach(wrapper => mediaIntersectionObserver.observe(wrapper));
+            if (window.twttr && window.twttr.widgets) {
+                const tweetEmbeds = otkViewer.querySelectorAll('.otk-tweet-embed');
+                if (tweetEmbeds.length > 0) {
+                    consoleLog(`[Twitter] Found ${tweetEmbeds.length} tweet embeds to render.`);
+                    window.twttr.widgets.load(tweetEmbeds);
+                }
+            }
             consoleLog("All inline media load attempts complete.");
             updateLoadingProgress(95, "Finalizing view...");
     viewerActiveImageCount = uniqueImageViewerHashes.size;
@@ -1463,29 +1553,25 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
     updateDisplayedStatistics(); // Update stats after all media processing is attempted.
 
             let anchorScrolled = false;
-            const anchoredInstanceId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
-            if (anchoredInstanceId) {
-                // The ID stored is now always the unique instance ID of the DOM element
-                const anchoredElement = document.getElementById(anchoredInstanceId);
-                if (anchoredElement) {
+            const storedAnchoredInstanceId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
+
+            if (storedAnchoredInstanceId) {
+                const anchoredElement = document.getElementById(storedAnchoredInstanceId);
+
+                if (anchoredElement && messagesContainer.contains(anchoredElement)) {
                     try {
-                        // Ensure the element is within the messagesContainer before scrolling
-                        if (messagesContainer.contains(anchoredElement)) {
-                            anchoredElement.scrollIntoView({ behavior: 'auto', block: 'center' });
-                            anchorScrolled = true;
-                            consoleLog(`Scrolled to anchored instance: ${anchoredInstanceId}`);
-                        } else {
-                            consoleWarn(`Anchored element ${anchoredInstanceId} found in document, but not within messagesContainer. Cannot scroll.`);
-                            // This might happen if the viewer was cleared and re-rendered, and old IDs persist.
-                            // localStorage.removeItem(ANCHORED_MESSAGE_ID_KEY); // Consider removing if invalid
+                        anchoredElement.scrollIntoView({ behavior: 'auto', block: 'center' });
+                        anchorScrolled = true;
+                        consoleLog(`Scrolled to anchored message instance: ${storedAnchoredInstanceId}`);
+                        if (!anchoredElement.classList.contains(ANCHORED_MESSAGE_CLASS)) {
+                            anchoredElement.classList.add(ANCHORED_MESSAGE_CLASS);
                         }
                     } catch (e) {
-                        consoleError("Error scrolling to anchored instance:", e);
+                        consoleError("Error scrolling to anchored message:", e);
                     }
                 } else {
-                    consoleWarn(`Anchored instance ID ${anchoredInstanceId} not found in DOM to scroll to.`);
-                    // Optionally remove invalid anchor from localStorage if element not found after full render
-                    localStorage.removeItem(ANCHORED_MESSAGE_ID_KEY); // More aggressively remove if not found
+                    consoleWarn(`Anchored message instance ${storedAnchoredInstanceId} not found. Clearing anchor.`);
+                    localStorage.removeItem(ANCHORED_MESSAGE_ID_KEY);
                 }
             }
 
@@ -1513,10 +1599,226 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
         });
     }
 
-    // Signature includes isTopLevelMessage, currentDepth, and threadColor
-    function createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor) {
+// Helper function to populate attachmentDiv with media (images/videos)
+function _populateAttachmentDivWithMedia(
+    attachmentDiv, // The div to append media to
+    message,       // The message object
+    actualBoardForLink, // Board string for URLs
+    mediaLoadPromises,  // Array for async operations
+    uniqueImageViewerHashes, // Set for tracking unique images shown
+    isTopLevelMessage,     // Boolean, for some media logic (e.g., video stats)
+    layoutStyle,           // 'new_design' or 'default', to condition New Design specific logic
+    renderedFullSizeImageHashes, // Set for tracking full-size images
+    viewerTopLevelAttachedVideoHashes, // Set for video stats
+    otkMediaDB // IndexedDB instance
+) {
+    // Ensure message.attachment and message.attachment.ext exist before using them
+    if (!message.attachment || !message.attachment.ext) {
+        // consoleWarn(" populateAttachmentDivWithMedia: Attachment or extension missing.", message.id);
+        return; // Nothing to process
+    }
+
+    const extLower = message.attachment.ext.toLowerCase();
+    const filehash = message.attachment.filehash_db_key || `${message.attachment.tim}${extLower}`;
+
+    if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) {
+        // --- IMAGE LOGIC ---
+        // Unified image logic (derived from New Design's more feature-rich version)
+        let defaultToThumbnail;
+        let isFirstFullSizeRender = !renderedFullSizeImageHashes.has(filehash);
+
+        const { w, h } = message.attachment;
+        if ((w <= 570 && h <= 730) || (w <= 2050 && h <= 530)) {
+            defaultToThumbnail = false;
+        } else {
+            defaultToThumbnail = true;
+        }
+
+        const img = document.createElement('img');
+        img.dataset.filehash = filehash;
+        img.dataset.thumbWidth = message.attachment.tn_w;
+        img.dataset.thumbHeight = message.attachment.tn_h;
+        img.dataset.isThumbnail = defaultToThumbnail ? 'true' : 'false';
+        img.style.cursor = 'pointer';
+        img.style.display = 'block';
+        img.style.borderRadius = '3px';
+
+        const webFullSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
+        const webThumbSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}s.jpg`;
+        img.dataset.fullSrc = webFullSrc;
+        img.dataset.thumbSrc = webThumbSrc;
+
+        const setImageProperties = (src) => {
+            if (img.dataset.isThumbnail === 'true') {
+                img.src = src || img.dataset.thumbSrc;
+                img.style.width = message.attachment.tn_w + 'px';
+                img.style.height = message.attachment.tn_h + 'px';
+                img.style.maxWidth = ''; img.style.maxHeight = '';
+            } else {
+                img.src = src || img.dataset.fullSrc;
+                img.style.maxWidth = '85%';
+                img.style.width = message.attachment.w + 'px';
+                img.style.height = message.attachment.h + 'px';
+            }
+        };
+
+        img.addEventListener('click', () => {
+            const currentlyThumbnail = img.dataset.isThumbnail === 'true';
+            if (currentlyThumbnail) {
+                if (message.attachment.localStoreId && otkMediaDB) {
+                    const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
+                    const store = transaction.objectStore('mediaStore');
+                    const request = store.get(message.attachment.localStoreId);
+                    request.onsuccess = (event) => {
+                        const storedItem = event.target.result;
+                        if (storedItem && storedItem.blob) {
+                            blobToDataURL(storedItem.blob).then(dataURL => {
+                                img.src = dataURL;
+                                img.style.maxWidth = '85%';
+                                img.style.width = message.attachment.w + 'px';
+                                img.style.height = message.attachment.h + 'px';
+                                img.dataset.isThumbnail = 'false';
+                            });
+                        }
+                    };
+                } else {
+                    img.src = img.dataset.fullSrc;
+                    img.style.maxWidth = '85%';
+                    img.style.width = message.attachment.w + 'px';
+                    img.style.height = message.attachment.h + 'px';
+                    img.dataset.isThumbnail = 'false';
+                }
+            } else {
+                if (message.attachment.localThumbStoreId && otkMediaDB) {
+                    const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
+                    const store = transaction.objectStore('mediaStore');
+                    const request = store.get(message.attachment.localThumbStoreId);
+                    request.onsuccess = (event) => {
+                        const storedItem = event.target.result;
+                        if (storedItem && storedItem.blob) {
+                            blobToDataURL(storedItem.blob).then(dataURL => {
+                                img.src = dataURL;
+                                img.style.width = message.attachment.tn_w + 'px';
+                                img.style.height = message.attachment.tn_h + 'px';
+                                img.style.maxWidth = '';
+                                img.style.maxHeight = '';
+                                img.dataset.isThumbnail = 'true';
+                            });
+                        }
+                    };
+                } else {
+                    img.src = img.dataset.thumbSrc;
+                    img.style.width = message.attachment.tn_w + 'px';
+                    img.style.height = message.attachment.tn_h + 'px';
+                    img.style.maxWidth = '';
+                    img.style.maxHeight = '';
+                    img.dataset.isThumbnail = 'true';
+                }
+            }
+        });
+
+        if (message.attachment.localStoreId && otkMediaDB) {
+            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
+            const store = transaction.objectStore('mediaStore');
+            const request = store.get(defaultToThumbnail ? message.attachment.localThumbStoreId : message.attachment.localStoreId);
+            request.onsuccess = (event) => {
+                const storedItem = event.target.result;
+                if (storedItem && storedItem.blob) {
+                    blobToDataURL(storedItem.blob).then(dataURL => {
+                        setImageProperties(dataURL);
+                    });
+                } else {
+                    setImageProperties();
+                }
+            };
+            request.onerror = (event) => {
+                consoleError(`Error fetching image ${filehash} from IDB: ${event.target.error}`);
+                setImageProperties();
+            };
+        } else {
+            setImageProperties();
+        }
+        attachmentDiv.appendChild(img);
+
+    } else if (extLower.endsWith('webm') || extLower.endsWith('mp4')) {
+        // --- VIDEO LOGIC ---
+        const setupVideo = (src) => {
+            const videoElement = document.createElement('video');
+            if (!message.attachment.tim || !message.attachment.ext) {
+                consoleError(`Video attachment for message ${message.id} is missing 'tim' or 'ext'. Cannot construct video src.`);
+                // Potentially don't append, or append a placeholder? For now, it will have no src.
+            } else {
+                videoElement.src = src || `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower.startsWith('.') ? extLower : '.' + extLower}`; // Ensure ext has a dot
+            }
+            videoElement.controls = true;
+            videoElement.style.maxWidth = '85%';
+            videoElement.style.width = message.attachment.w + 'px';
+            videoElement.style.height = message.attachment.h + 'px';
+            videoElement.style.borderRadius = '3px';
+            videoElement.style.display = 'block';
+            attachmentDiv.appendChild(videoElement);
+            if (src) {
+                videoElement.load();
+            }
+            if (message.attachment.filehash_db_key && isTopLevelMessage) {
+                viewerTopLevelAttachedVideoHashes.add(message.attachment.filehash_db_key);
+            }
+        };
+
+        if (message.attachment.localStoreId && otkMediaDB) {
+            mediaLoadPromises.push(new Promise((resolveMedia) => {
+                const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
+                const store = transaction.objectStore('mediaStore');
+                const request = store.get(message.attachment.localStoreId);
+                request.onsuccess = (event) => {
+                    const storedItem = event.target.result;
+                    if (storedItem && storedItem.blob) {
+                        setupVideo(URL.createObjectURL(storedItem.blob));
+                    } else {
+                        setupVideo(null);
+                    }
+                    resolveMedia();
+                };
+                request.onerror = (event) => {
+                    consoleError(`Error fetching video ${filehash} from IDB: ${event.target.error}`);
+                    setupVideo(null);
+                    resolveMedia();
+                };
+            }));
+        } else {
+            setupVideo(null);
+        }
+    }
+}
+
+    // Signature now includes parentMessageId
+    function createMessageElementDOM(message, mediaLoadPromises, embedWrappers, uniqueImageViewerHashes, boardForLink, isTopLevelMessage, currentDepth, threadColor, parentMessageId = null) {
         const layoutStyle = localStorage.getItem('otkMessageLayoutStyle') || 'default';
-        consoleLog(`[DepthCheck] Rendering message: ${message.id}, currentDepth: ${currentDepth}, MAX_QUOTE_DEPTH: ${MAX_QUOTE_DEPTH}, isTopLevel: ${isTopLevelMessage}, layoutStyle: ${layoutStyle}`);
+        consoleLog(`[DepthCheck] Rendering message: ${message.id}, parent: ${parentMessageId}, currentDepth: ${currentDepth}, MAX_QUOTE_DEPTH: ${MAX_QUOTE_DEPTH}, isTopLevel: ${isTopLevelMessage}, layoutStyle: ${layoutStyle}`);
+
+        const allThemeSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
+        let depthKeyPart;
+        if (isTopLevelMessage) { // Depth 0
+            depthKeyPart = '0';
+        } else if (currentDepth === 1) { // Depth 1
+            depthKeyPart = '1';
+        } else { // Depth 2+
+            depthKeyPart = '2plus';
+        }
+
+        const disableUnderlineKey = `otkMsgDepth${depthKeyPart}DisableHeaderUnderline`;
+        const displayFilenamesKey = `otkMsgDepth${depthKeyPart}DisplayMediaFilename`;
+
+        // Default for disableUnderline is false (meaning, underline is ON by default)
+        const shouldDisableUnderline = allThemeSettings[disableUnderlineKey] === true;
+
+        // Default for displayFilenames is true (meaning, filenames are SHOWN by default)
+        let shouldDisplayFilenames;
+        if (allThemeSettings.hasOwnProperty(displayFilenamesKey)) {
+            shouldDisplayFilenames = allThemeSettings[displayFilenamesKey] === true;
+        } else {
+            shouldDisplayFilenames = true; // Default value
+        }
 
         // --- Define all media patterns once at the top of the function ---
         const youtubePatterns = [
@@ -1596,14 +1898,17 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                         }
 
                         if (quotedMessageObject) {
+                            consoleLog(`[QuoteDebug] new_design: Calling createMessageElementDOM for quote ${quotedMessageId}. mediaLoadPromises is an array: ${Array.isArray(mediaLoadPromises)}`);
                             const quotedElement = createMessageElementDOM(
                                 quotedMessageObject,
                                 mediaLoadPromises,
+                                embedWrappers,
                                 uniqueImageViewerHashes,
                                 quotedMessageObject.board || boardForLink,
                                 false, // isTopLevelMessage = false for quotes
                                 currentDepth + 1,
-                                null // threadColor is not used for quoted message accents in new design
+                                null, // threadColor is not used for quoted message accents in new design
+                                message.id // Pass the PARENT message's ID for the quote
                             );
                             if (quotedElement) {
                                 quotedMessagesContainer.appendChild(quotedElement);
@@ -1658,24 +1963,31 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
 
             const messageHeader = document.createElement('div');
             messageHeader.className = 'otk-header-div';
+            messageHeader.style.justifyContent = 'flex-start'; // Override CSS for left alignment
 
             const timestampParts = formatTimestampForHeader(message.time);
-            const headerLeft = document.createElement('span');
-            const headerRight = document.createElement('span');
+            const headerContent = document.createElement('span'); // Use a single span for all content
 
-            if (isTopLevelMessage) {
-                headerLeft.textContent = `${timestampParts.time} ${timestampParts.date}`;
-                headerRight.textContent = `#${message.id}`;
-            } else { // Quoted message
-                headerLeft.textContent = `⤷ ${timestampParts.time} ${timestampParts.date}`;
-                headerRight.textContent = `#${message.id}`;
+            let prefix = "";
+            if (!isTopLevelMessage) {
+                prefix = "⤷ ";
             }
-            messageHeader.appendChild(headerLeft);
-            messageHeader.appendChild(headerRight);
+
+            headerContent.textContent = `${prefix}#${message.id} | ${timestampParts.time} | ${timestampParts.date}`;
+
+            messageHeader.appendChild(headerContent);
             textWrapperDiv.appendChild(messageHeader);
+
 
             const textElement = document.createElement('div');
             textElement.className = 'otk-content-div'; // Apply class for styling
+            if (shouldDisableUnderline) { // Apply to all depths when underline is hidden
+                messageHeader.style.borderBottom = 'none';
+                messageHeader.style.paddingBottom = '0';
+                messageHeader.style.marginBottom = '0';
+                textElement.style.marginTop = '0px';
+                textElement.style.paddingTop = '0px';
+            }
             // The white-space, overflow-wrap, word-break are handled by CSS class '.otk-content-div'
 
             // Process currentMessageOwnText for embeds and remaining text
@@ -1707,13 +2019,66 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                                     let seenEmbeds = JSON.parse(localStorage.getItem(SEEN_EMBED_URL_IDS_KEY)) || [];
                                     if (!seenEmbeds.includes(canonicalEmbedId)) { /* ... update stats ... */ }
 
-                                    textElement.appendChild(createYouTubeEmbedElement(videoId, timestampStr));
+                                    const embedElement = createYouTubeEmbedElement(videoId, timestampStr);
+                                    textElement.appendChild(embedElement);
+                                    embedWrappers.push(embedElement);
                                     soleUrlEmbedMade = true; processedAsEmbed = true; break;
                                 }
                             }
                         }
                     }
                     // Similar checks for Twitch and Streamable sole URLs... (omitted for brevity, but structure is the same)
+                    if (!soleUrlEmbedMade) {
+                        for (const patternObj of twitchPatterns) {
+                            const match = trimmedLine.match(patternObj.regex);
+                            if (match) {
+                                const id = match[patternObj.idGroup];
+                                let timestampStr = null;
+                                if (patternObj.type === 'vod') {
+                                    const timeMatch = trimmedLine.match(twitchTimestampRegex);
+                                    if (timeMatch && timeMatch[1]) timestampStr = timeMatch[1];
+                                }
+                                if (id) {
+                                    const embedElement = createTwitchEmbedElement(patternObj.type, id, timestampStr);
+                                    textElement.appendChild(embedElement);
+                                    embedWrappers.push(embedElement);
+                                    soleUrlEmbedMade = true; processedAsEmbed = true; break;
+                                }
+                            }
+                        }
+                    }
+                    if (!soleUrlEmbedMade) {
+                        for (const patternObj of streamablePatterns) {
+                            const match = trimmedLine.match(patternObj.regex);
+                            if (match) {
+                                const videoId = match[patternObj.idGroup];
+                                if (videoId) {
+                                    const embedElement = createStreamableEmbedElement(videoId);
+                                    textElement.appendChild(embedElement);
+                                    embedWrappers.push(embedElement);
+                                    soleUrlEmbedMade = true; processedAsEmbed = true; break;
+                                }
+                            }
+                        }
+                    }
+                    if (!soleUrlEmbedMade) {
+                        for (const patternObj of twitterPatterns) {
+                            const match = trimmedLine.match(patternObj.regex);
+                            if (match) {
+                                const tweetId = match[patternObj.idGroup];
+                                if (tweetId) {
+                                    const tweetEmbed = createTweetEmbedElement(tweetId, textElement);
+                                    if (tweetEmbed) {
+                                        textElement.appendChild(tweetEmbed);
+                                        embedWrappers.push(tweetEmbed);
+                                    }
+                                    soleUrlEmbedMade = true;
+                                    processedAsEmbed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
 
                     if (!soleUrlEmbedMade) {
                         let currentTextSegment = line;
@@ -1740,6 +2105,17 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                                     earliestMatch = matchAttempt;
                                     earliestMatchPattern = patternObj;
                                     earliestMatchType = 'youtube';
+                                    earliestMatchIsQuoteLink = false;
+                                }
+                            }
+
+                            // Find earliest inline Twitter match
+                            for (const patternObj of inlineTwitterPatterns) {
+                                const matchAttempt = currentTextSegment.match(patternObj.regex);
+                                if (matchAttempt && (earliestMatch === null || matchAttempt.index < earliestMatch.index)) {
+                                    earliestMatch = matchAttempt;
+                                    earliestMatchPattern = patternObj;
+                                    earliestMatchType = 'twitter';
                                     earliestMatchIsQuoteLink = false;
                                 }
                             }
@@ -1822,6 +2198,11 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                                             canonicalEmbedId = `streamable_${id}`;
                                             embedElement = createStreamableEmbedElement(id);
                                         }
+                                    } else if (earliestMatchType === 'twitter') {
+                                        if (id) {
+                                            canonicalEmbedId = `twitter_${id}`;
+                                            embedElement = createTweetEmbedElement(id);
+                                        }
                                     }
 
                                     if (embedElement) {
@@ -1834,10 +2215,11 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                                                 localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
                                                 let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
                                                 localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
-                                                updateDisplayedStatistics();
+                                                updateDisplayedStatistics({});
                                             }
                                         }
                                         textElement.appendChild(embedElement);
+                                        embedWrappers.push(embedElement);
                                     }
                                 }
                                 currentTextSegment = currentTextSegment.substring(earliestMatch.index + matchedText.length);
@@ -1859,12 +2241,17 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 textElement.textContent = message.text || '';
             }
 
+            if (shouldDisableUnderline && textElement.firstChild && textElement.firstChild.nodeName === 'BR') {
+                textElement.removeChild(textElement.firstChild);
+            }
+
             textWrapperDiv.appendChild(textElement);
             postDiv.appendChild(textWrapperDiv);
             messageDiv.appendChild(postDiv); // Append the postDiv after any block quotes
 
             // Attachment handling (can be similar to original, appended to messageDiv)
             if (message.attachment && message.attachment.tim) {
+                const actualBoardForLink = boardForLink || message.board || 'b'; // Define actualBoardForLink here
                 const attachmentDiv = document.createElement('div');
                 attachmentDiv.style.marginTop = '10px'; // Standard margin for attachments
                 // ... (rest of attachment logic is complex and largely reusable, will integrate carefully)
@@ -1873,162 +2260,96 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 // Key: ensure it appends to this 'messageDiv' or 'textWrapperDiv' as appropriate for new layout.
                 // Example.html doesn't show attachments, so standard placement below text is fine.
 
-                const filenameLink = document.createElement('a');
-                filenameLink.textContent = `${message.attachment.filename} (${message.attachment.ext.substring(1)})`;
-                const actualBoardForLink = boardForLink || message.board || 'b';
-                filenameLink.href = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
-                filenameLink.target = "_blank";
-                // Use shared link styling for attachments for consistency, or new design specific if needed
-                filenameLink.style.cssText = "color: #60a5fa; display: block; margin-bottom: 5px; text-decoration: underline;";
-                attachmentDiv.appendChild(filenameLink);
-
-                const extLower = message.attachment.ext.toLowerCase();
-                const filehash = message.attachment.filehash_db_key || `${message.attachment.tim}${extLower}`;
-
-                if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) {
-                    let isFirstFullSizeRender = !renderedFullSizeImageHashes.has(filehash);
-                    // Logic for new theme:
-                    // Top-level messages: show full if isFirstFullSizeRender, else thumb.
-                    // Quoted messages: always show thumb by default.
-                    let defaultToThumbnail;
-                    if (isTopLevelMessage) {
-                        defaultToThumbnail = !isFirstFullSizeRender;
-                    } else { // Quoted message
-                        defaultToThumbnail = true;
-                    }
-
-                    if (isFirstFullSizeRender && isTopLevelMessage) { // Only add to set if it's going to be shown full size initially
-                        renderedFullSizeImageHashes.add(filehash);
-                    }
-
-                    const img = document.createElement('img');
-                    img.dataset.filehash = filehash;
-                    img.dataset.thumbWidth = message.attachment.tn_w;
-                    img.dataset.thumbHeight = message.attachment.tn_h;
-                    img.dataset.isThumbnail = defaultToThumbnail ? 'true' : 'false';
-                    img.style.cursor = 'pointer';
-                    img.style.display = 'block';
-                    img.style.borderRadius = '3px';
-
-                    const webFullSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
-                    const webThumbSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}s.jpg`;
-                    img.dataset.fullSrc = webFullSrc;
-                    img.dataset.thumbSrc = webThumbSrc;
-
-                    const setImageProperties = () => {
-                        if (img.dataset.isThumbnail === 'true') {
-                            img.src = img.dataset.thumbSrc;
-                            img.style.width = img.dataset.thumbWidth + 'px';
-                            img.style.height = img.dataset.thumbHeight + 'px';
-                            img.style.maxWidth = ''; img.style.maxHeight = '';
-                        } else {
-                            img.src = img.dataset.fullSrc;
-                            img.style.maxWidth = '100%'; img.style.maxHeight = '400px'; // Max height for full view
-                            img.style.width = 'auto'; img.style.height = 'auto';
-                        }
-                    };
-                    setImageProperties(); // Initial set
-
-                    img.addEventListener('click', () => {
-                        const currentlyThumbnail = img.dataset.isThumbnail === 'true';
-                        if (currentlyThumbnail) {
-                            img.src = img.dataset.fullSrc;
-                            img.style.maxWidth = '100%'; img.style.maxHeight = '400px';
-                            img.style.width = 'auto'; img.style.height = 'auto';
-                            img.dataset.isThumbnail = 'false';
-                            if (!renderedFullSizeImageHashes.has(filehash)) { // If toggled to full, ensure it's marked as rendered full-size
-                                renderedFullSizeImageHashes.add(filehash);
-                            }
-                        } else {
-                            img.src = img.dataset.thumbSrc;
-                            img.style.width = img.dataset.thumbWidth + 'px';
-                            img.style.height = img.dataset.thumbHeight + 'px';
-                            img.style.maxWidth = ''; img.style.maxHeight = '';
-                            img.dataset.isThumbnail = 'true';
-                        }
-                    });
-
-                    // IDB loading logic (copied and adapted from default theme path)
-                    if (message.attachment.localStoreId && otkMediaDB) {
-                        mediaLoadPromises.push(new Promise((resolveMedia) => {
-                            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                            const store = transaction.objectStore('mediaStore');
-                            const request = store.get(message.attachment.localStoreId);
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob && !storedItem.isThumbnail) {
-                                    blobToDataURL(storedItem.blob)
-                                        .then(dataURL => {
-                                            img.dataset.fullSrc = dataURL;
-                                            if (img.dataset.isThumbnail === 'false') img.src = dataURL;
-                                            uniqueImageViewerHashes.add(filehash); resolveMedia();
-                                        }).catch(err => { consoleError(`Error converting full blob: ${err}`); uniqueImageViewerHashes.add(filehash); resolveMedia(); });
-                                } else { uniqueImageViewerHashes.add(filehash); resolveMedia(); }
-                            };
-                            request.onerror = (event) => { consoleError(`Error fetching full image from IDB: ${event.target.error}`); uniqueImageViewerHashes.add(filehash); resolveMedia(); };
-                        }));
-                    } else { uniqueImageViewerHashes.add(filehash); }
-
-                    if (message.attachment.localThumbStoreId && otkMediaDB) {
-                        mediaLoadPromises.push(new Promise((resolveMedia) => {
-                            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                            const store = transaction.objectStore('mediaStore');
-                            const request = store.get(message.attachment.localThumbStoreId);
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob && storedItem.isThumbnail) {
-                                    blobToDataURL(storedItem.blob)
-                                        .then(dataURL => {
-                                            img.dataset.thumbSrc = dataURL;
-                                            if (img.dataset.isThumbnail === 'true') img.src = dataURL;
-                                            resolveMedia();
-                                        }).catch(err => { consoleError(`Error converting thumb blob: ${err}`); resolveMedia(); });
-                                } else { resolveMedia(); }
-                            };
-                            request.onerror = (event) => { consoleError(`Error fetching thumb from IDB: ${event.target.error}`); resolveMedia(); };
-                        }));
-                    }
-                    attachmentDiv.appendChild(img);
-
-                } else if (['.webm', '.mp4'].includes(extLower)) {
-                    // Video handling (copied and adapted from default theme path)
-                    const setupVideo = (src) => {
-                        const videoElement = document.createElement('video');
-                        videoElement.src = src || `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower}`;
-                        videoElement.controls = true;
-                        videoElement.style.maxWidth = '100%'; videoElement.style.maxHeight = '400px'; // Consistent max height
-                        videoElement.style.borderRadius = '3px'; videoElement.style.display = 'block';
-                        attachmentDiv.appendChild(videoElement);
-                        if (message.attachment.filehash_db_key && isTopLevelMessage) { // Stats only for top-level
-                            viewerTopLevelAttachedVideoHashes.add(message.attachment.filehash_db_key);
-                        }
-                    };
-                    if (message.attachment.localStoreId && otkMediaDB) {
-                        mediaLoadPromises.push(new Promise((resolveMedia) => {
-                            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                            const store = transaction.objectStore('mediaStore');
-                            const request = store.get(message.attachment.localStoreId);
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob) setupVideo(URL.createObjectURL(storedItem.blob));
-                                else setupVideo(null);
-                                resolveMedia();
-                            };
-                            request.onerror = (event) => { consoleError(`Error fetching video from IDB: ${event.target.error}`); setupVideo(null); resolveMedia(); };
-                        }));
-                    } else { setupVideo(null); }
+                if (shouldDisplayFilenames) {
+                    const filenameLink = document.createElement('a');
+                    filenameLink.className = 'attachment-filename';
+                    filenameLink.textContent = `${message.attachment.filename} (${message.attachment.ext.substring(1)})`;
+                    filenameLink.href = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
+                    filenameLink.target = "_blank";
+                    // Use shared link styling for attachments for consistency, or new design specific if needed
+                    filenameLink.style.cssText = "color: #60a5fa; display: block; margin-bottom: 5px; text-decoration: underline;";
+                    attachmentDiv.appendChild(filenameLink);
                 }
-                 if (attachmentDiv.hasChildNodes()) {
-                    textWrapperDiv.appendChild(attachmentDiv);
-                }
+
+                // Call helper function to populate media
+                _populateAttachmentDivWithMedia(
+                    attachmentDiv,
+                    message,
+                    actualBoardForLink,
+                    mediaLoadPromises,
+                    uniqueImageViewerHashes,
+                    isTopLevelMessage,
+                    'new_design', // layoutStyle
+                    renderedFullSizeImageHashes, // Specific to New Design image handling
+                    viewerTopLevelAttachedVideoHashes,
+                    otkMediaDB
+                );
+
+                // Always append attachmentDiv if message.attachment.tim exists,
+                // trusting _populateAttachmentDivWithMedia to handle content.
+                // Removed: if (attachmentDiv.hasChildNodes())
+                textWrapperDiv.appendChild(attachmentDiv);
             }
 
-            // Click listener for anchoring (needs to be robust for new structure)
-            const uniqueInstanceId = `otk-instance-${message.id}-${currentDepth}-${Date.now().toString(36)}${Math.random().toString(36).substr(2, 5)}`;
-            messageDiv.id = uniqueInstanceId;
+            // Click listener for anchoring
+            const persistentInstanceId = `otk-msg-${parentMessageId || 'toplevel'}-${message.id}`;
+            messageDiv.id = persistentInstanceId;
             messageDiv.setAttribute('data-original-message-id', message.id);
-            messageDiv.addEventListener('click', (event) => { /* ... anchoring logic ... */ });
-            if (uniqueInstanceId === localStorage.getItem(ANCHORED_MESSAGE_ID_KEY)) {
+
+            messageDiv.addEventListener('click', (event) => {
+                const target = event.target;
+                let preventAnchor = false;
+
+                // Standard interactive elements that should not trigger anchoring
+                if (target.matches('a, img, video, iframe, input, button, select, textarea') ||
+                    target.closest('a, img, video, iframe, input, button, select, textarea') ||
+                    target.isContentEditable) {
+                    preventAnchor = true;
+                }
+
+                // Specific wrapper classes for embeds that should not trigger anchoring
+                if (!preventAnchor) {
+                    const specificWrappers = [
+                        '.thumbnail-link',
+                        '.otk-youtube-embed-wrapper',
+                        '.otk-twitch-embed-wrapper',
+                        '.otk-streamable-embed-wrapper'
+                    ];
+                    if (specificWrappers.some(cls => target.matches(cls) || target.closest(cls))) {
+                        preventAnchor = true;
+                    }
+                }
+
+                if (preventAnchor) {
+                    return; // Do not anchor
+                }
+
+                if (!isTopLevelMessage) {
+                    event.stopPropagation();
+                }
+
+                const isThisMessageAlreadyAnchored = messageDiv.classList.contains(ANCHORED_MESSAGE_CLASS);
+
+                // Un-highlight all currently anchored messages
+                document.querySelectorAll(`.${ANCHORED_MESSAGE_CLASS}`).forEach(el => {
+                    el.classList.remove(ANCHORED_MESSAGE_CLASS);
+                });
+
+                if (isThisMessageAlreadyAnchored) {
+                    // If the clicked message was the anchor, un-anchor it
+                    localStorage.removeItem(ANCHORED_MESSAGE_ID_KEY);
+                    consoleLog(`Un-anchored message instance: ${persistentInstanceId}`);
+                } else {
+                    // Otherwise, anchor this new message
+                    messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
+                    localStorage.setItem(ANCHORED_MESSAGE_ID_KEY, persistentInstanceId);
+                    consoleLog(`Anchored new message instance: ${persistentInstanceId}`);
+                }
+            });
+
+            // Initial highlight check
+            const initiallyStoredAnchoredId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
+            if (persistentInstanceId === initiallyStoredAnchoredId) {
                 messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
             }
 
@@ -2100,17 +2421,25 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 headerBorderVar = 'var(--otk-viewer-quote2plus-header-border-color)';
             }
 
+            let headerBorderBottomStyle = `1px solid ${headerBorderVar}`;
+            let headerPaddingBottomStyle = '5px';
+            // let headerDisplayStlye = 'flex'; // Default display style for the header - will be set directly
+
+            // if (shouldDisableUnderline) { // This logic will be handled after initial style.cssText set
+            // }
+
             messageHeader.style.cssText = `
                 font-size: 12px;
                 color: ${ isTopLevelMessage ? 'var(--otk-msg-depth0-header-text-color)' : (currentDepth === 1 ? 'var(--otk-msg-depth1-header-text-color)' : 'var(--otk-msg-depth2plus-header-text-color)') };
                 font-weight: bold;
-                margin-bottom: 8px;
-                padding-bottom: 5px;
-                border-bottom: 1px solid ${headerBorderVar};
-                display: flex;
+                margin-bottom: 8px; /* Default margin */
+                padding-bottom: ${headerPaddingBottomStyle}; /* Default padding for underline */
+                border-bottom: ${headerBorderBottomStyle}; /* Default border for underline */
+                display: flex; /* Default display */
                 align-items: center;
                 width: 100%;
             `;
+
 
             const timestampParts = formatTimestampForHeader(message.time);
 
@@ -2174,6 +2503,14 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 textElement.style.fontSize = 'var(--otk-msg-depth2plus-content-font-size)';
             }
 
+            if (shouldDisableUnderline) { // Apply to all depths when underline is hidden
+                messageHeader.style.borderBottom = 'none';
+                messageHeader.style.paddingBottom = '0';
+                messageHeader.style.marginBottom = '0';
+                textElement.style.marginTop = '0px';
+                textElement.style.paddingTop = '0px';
+            }
+
             if (message.text && typeof message.text === 'string') {
                 const lines = message.text.split('\n');
                 const quoteRegex = /^>>(\d+)/;
@@ -2210,10 +2547,12 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                                             localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
                                             let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
                                             localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
-                                            updateDisplayedStatistics(); // This updates global, not viewer-specific directly
+                                            updateDisplayedStatistics({}); // This updates global, not viewer-specific directly
                                         }
                                     }
-                                    textElement.appendChild(createYouTubeEmbedElement(videoId, timestampStr));
+                                    const embedElement = createYouTubeEmbedElement(videoId, timestampStr);
+                                    textElement.appendChild(embedElement);
+                                    embedWrappers.push(embedElement);
                                     soleUrlEmbedMade = true; processedAsEmbed = true; break;
                                 }
                             }
@@ -2244,10 +2583,12 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                                             localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
                                             let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
                                             localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
-                                            updateDisplayedStatistics();
+                                            updateDisplayedStatistics({});
                                         }
                                     }
-                                    textElement.appendChild(createTwitchEmbedElement(patternObj.type, id, timestampStr));
+                                    const embedElement = createTwitchEmbedElement(patternObj.type, id, timestampStr);
+                                    textElement.appendChild(embedElement);
+                                    embedWrappers.push(embedElement);
                                     soleUrlEmbedMade = true; processedAsEmbed = true; break;
                                 }
                             }
@@ -2255,6 +2596,24 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                     }
 
                     // Check for Sole Streamable URL
+                    if (!soleUrlEmbedMade) {
+                        for (const patternObj of twitterPatterns) {
+                            const match = trimmedLine.match(patternObj.regex);
+                            if (match) {
+                                const tweetId = match[patternObj.idGroup];
+                                if (tweetId) {
+                                    const tweetEmbed = createTweetEmbedElement(tweetId, textElement);
+                                    if (tweetEmbed) {
+                                        textElement.appendChild(tweetEmbed);
+                                        embedWrappers.push(tweetEmbed);
+                                    }
+                                    soleUrlEmbedMade = true;
+                                    processedAsEmbed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     if (!soleUrlEmbedMade) {
                         for (const patternObj of streamablePatterns) {
                             const match = trimmedLine.match(patternObj.regex);
@@ -2274,10 +2633,12 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                                             localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
                                             let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
                                             localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
-                                            updateDisplayedStatistics();
+                                            updateDisplayedStatistics({});
                                         }
                                     }
-                                    textElement.appendChild(createStreamableEmbedElement(videoId));
+                                    const embedElement = createStreamableEmbedElement(videoId);
+                                    textElement.appendChild(embedElement);
+                                    embedWrappers.push(embedElement);
                                     soleUrlEmbedMade = true; processedAsEmbed = true; break;
                                 }
                             }
@@ -2300,6 +2661,18 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                                         earliestMatch = matchAttempt;
                                         earliestMatchPattern = patternObj;
                                         earliestMatchType = 'youtube';
+                                    }
+                                }
+                            }
+
+                            // Find earliest Twitter inline match
+                            for (const patternObj of inlineTwitterPatterns) {
+                                const matchAttempt = currentTextSegment.match(patternObj.regex);
+                                if (matchAttempt) {
+                                    if (earliestMatch === null || matchAttempt.index < earliestMatch.index) {
+                                        earliestMatch = matchAttempt;
+                                        earliestMatchPattern = patternObj;
+                                        earliestMatchType = 'twitter';
                                     }
                                 }
                             }
@@ -2330,7 +2703,7 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                                 processedAsEmbed = true;
 
                                 if (earliestMatch.index > 0) {
-                                    appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
+                                    appendTextOrQuoteSegment(textElement, currentTextSegment.substring(0, earliestMatch.index), quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, embedWrappers, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, message.id);
                                 }
 
                                 const matchedUrl = earliestMatch[0];
@@ -2360,6 +2733,11 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                                         canonicalEmbedId = `streamable_${id}`;
                                         embedElement = createStreamableEmbedElement(id);
                                     }
+                                } else if (earliestMatchType === 'twitter') {
+                                    if (id) {
+                                        canonicalEmbedId = `twitter_${id}`;
+                                        embedElement = createTweetEmbedElement(id);
+                                    }
                                 }
 
                                 if (embedElement) {
@@ -2374,16 +2752,17 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                                             localStorage.setItem(SEEN_EMBED_URL_IDS_KEY, JSON.stringify(seenEmbeds));
                                             let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
                                             localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
-                                            updateDisplayedStatistics();
+                                            updateDisplayedStatistics({});
                                         }
                                     }
                                     textElement.appendChild(embedElement);
+                                    embedWrappers.push(embedElement);
                                 }
 
                                 currentTextSegment = currentTextSegment.substring(earliestMatch.index + matchedUrl.length);
                             } else {
                                 if (currentTextSegment.length > 0) {
-                                    appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, uniqueImageViewerHashes, boardForLink, mediaLoadPromises);
+                                    appendTextOrQuoteSegment(textElement, currentTextSegment, quoteRegex, currentDepth, MAX_QUOTE_DEPTH, messagesByThreadId, embedWrappers, uniqueImageViewerHashes, boardForLink, mediaLoadPromises, message.id);
                                 }
                                 currentTextSegment = "";
                             }
@@ -2398,322 +2777,107 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 textElement.textContent = message.text || ''; // Handle null or undefined message.text
             }
 
+            if (shouldDisableUnderline && textElement.firstChild && textElement.firstChild.nodeName === 'BR') {
+                textElement.removeChild(textElement.firstChild);
+            }
+
             messageDiv.appendChild(textElement);
 
-            // Generate a unique instance ID for this specific DOM element
-            // This ID will be used for anchoring and precise scrolling.
-            const uniqueInstanceId = `otk-instance-${message.id}-${currentDepth}-${Date.now().toString(36)}${Math.random().toString(36).substr(2, 5)}`;
-            messageDiv.id = uniqueInstanceId;
-            messageDiv.setAttribute('data-original-message-id', message.id); // Keep original ID for reference if needed
+            // Click listener for anchoring
+            const persistentInstanceId = `otk-msg-${parentMessageId || 'toplevel'}-${message.id}`;
+            messageDiv.id = persistentInstanceId;
+            messageDiv.setAttribute('data-original-message-id', message.id);
 
-            // Add click listener to the messageDiv for anchoring
             messageDiv.addEventListener('click', (event) => {
-            const target = event.target;
-            // consoleLog(`[AnchorClick Debug] Target:`, target, `Target classList:`, target.classList, `Parent (messageDiv):`, messageDiv, `Layout Style: ${layoutStyle}`); // Removed previous debug log
+                const target = event.target;
+                let preventAnchor = false;
 
-            let preventAnchor = false;
-
-            // Standard interactive elements
-            if (target.matches('a, img, video, iframe, input, button, select, textarea') ||
-                target.closest('a, img, video, iframe, input, button, select, textarea') ||
-                target.isContentEditable) {
-                preventAnchor = true;
-            }
-
-            // Specific wrapper classes for embeds or special links
-            if (!preventAnchor) {
-                const specificWrappers = [
-                    '.thumbnail-link',
-                    '.otk-youtube-embed-wrapper',
-                    '.otk-twitch-embed-wrapper',
-                    '.otk-streamable-embed-wrapper'
-                ];
-                for (const wrapperClass of specificWrappers) {
-                    if (target.matches(wrapperClass) || target.closest(wrapperClass)) {
-                        preventAnchor = true;
-                        break;
-                    }
+                // Standard interactive elements that should not trigger anchoring
+                if (target.matches('a, img, video, iframe, input, button, select, textarea') ||
+                    target.closest('a, img, video, iframe, input, button, select, textarea') ||
+                    target.isContentEditable) {
+                    preventAnchor = true;
                 }
-            }
 
-            // Theme-specific content areas
-            if (!preventAnchor) {
-                if (layoutStyle === 'new_design') {
-                    const newDesignContentClasses = [
-                        '.otk-color-square', // For the colored square in the new design
-                        '.otk-header-div',   // Header area in the new design
-                        '.otk-content-div'   // Main content text/media area in the new design
+                // Specific wrapper classes for embeds that should not trigger anchoring
+                if (!preventAnchor) {
+                    const specificWrappers = [
+                        '.thumbnail-link',
+                        '.otk-youtube-embed-wrapper',
+                        '.otk-twitch-embed-wrapper',
+                        '.otk-streamable-embed-wrapper'
                     ];
-                    for (const contentClass of newDesignContentClasses) {
-                        // Check if the target itself has the class or is a child of an element with that class.
-                        // event.currentTarget is messageDiv. We want to ensure the click isn't on these *within* messageDiv.
-                        if (target.classList.contains(contentClass.substring(1)) || target.closest(contentClass)) {
-                            preventAnchor = true;
-                            break;
-                        }
-                    }
-                } else { // Default layout
-                    // 'messageHeader' and 'textElement' are variables from the default layout's specific scope in createMessageElementDOM
-                    if (target === messageHeader || messageHeader.contains(target) ||
-                        target === textElement || textElement.contains(target)) {
+                    if (specificWrappers.some(cls => target.matches(cls) || target.closest(cls))) {
                         preventAnchor = true;
                     }
                 }
-            }
 
-            if (preventAnchor) {
-                 // consoleLog(`Anchor click ignored due to interactive/content target:`, target);
-                return; // Do not anchor
-            }
+                if (preventAnchor) {
+                    return; // Do not anchor
+                }
 
-            // If this message is a quote (not top-level), stop event propagation
-                // to prevent parent message's click handler from also firing if structures are nested.
                 if (!isTopLevelMessage) {
                     event.stopPropagation();
                 }
 
-                const currentlyAnchoredInstanceId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
+                const isThisMessageAlreadyAnchored = messageDiv.classList.contains(ANCHORED_MESSAGE_CLASS);
 
-                if (uniqueInstanceId === currentlyAnchoredInstanceId) {
-                    // Clicking the already anchored message: un-anchor it
-                    messageDiv.classList.remove(ANCHORED_MESSAGE_CLASS);
+                // Un-highlight all currently anchored messages
+                document.querySelectorAll(`.${ANCHORED_MESSAGE_CLASS}`).forEach(el => {
+                    el.classList.remove(ANCHORED_MESSAGE_CLASS);
+                });
+
+                if (isThisMessageAlreadyAnchored) {
+                    // If the clicked message was the anchor, un-anchor it
                     localStorage.removeItem(ANCHORED_MESSAGE_ID_KEY);
-                    consoleLog(`Un-anchored instance: ${uniqueInstanceId} (Original ID: ${message.id})`);
+                    consoleLog(`Un-anchored message instance: ${persistentInstanceId}`);
                 } else {
-                    // Clicking a new message or a different message: anchor it
-                    const oldAnchorElement = document.querySelector(`.${ANCHORED_MESSAGE_CLASS}`);
-                    if (oldAnchorElement) {
-                        oldAnchorElement.classList.remove(ANCHORED_MESSAGE_CLASS);
-                    }
+                    // Otherwise, anchor this new message
                     messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
-                    localStorage.setItem(ANCHORED_MESSAGE_ID_KEY, uniqueInstanceId);
-                    consoleLog(`Anchored new instance: ${uniqueInstanceId} (Original ID: ${message.id})`);
+                    localStorage.setItem(ANCHORED_MESSAGE_ID_KEY, persistentInstanceId);
+                    consoleLog(`Anchored new message instance: ${persistentInstanceId}`);
                 }
             });
 
             // Initial highlight check when the element is first created
-            const initiallyAnchoredInstanceId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
-            if (uniqueInstanceId === initiallyAnchoredInstanceId) {
+            const initiallyStoredAnchoredId = localStorage.getItem(ANCHORED_MESSAGE_ID_KEY);
+            if (persistentInstanceId === initiallyStoredAnchoredId) {
                 messageDiv.classList.add(ANCHORED_MESSAGE_CLASS);
             }
-
+            // The erroneous duplicated block that was here has been removed.
             if (message.attachment && message.attachment.tim) {
+                const actualBoardForLink = boardForLink || message.board || 'b'; // Use passed boardForLink, fallback to message.board or 'b'
                 const attachmentDiv = document.createElement('div');
                 attachmentDiv.style.marginTop = '10px';
 
-                const filenameLink = document.createElement('a');
-                filenameLink.textContent = `${message.attachment.filename} (${message.attachment.ext.substring(1)})`;
-                const actualBoardForLink = boardForLink || message.board || 'b'; // Use passed boardForLink, fallback to message.board or 'b'
-                filenameLink.href = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
-                filenameLink.target = "_blank";
-                filenameLink.style.cssText = "color: #60a5fa; display: block; margin-bottom: 5px; text-decoration: underline;";
-                attachmentDiv.appendChild(filenameLink);
-
-                const extLower = message.attachment.ext.toLowerCase();
-                const filehash = message.attachment.filehash_db_key || `${message.attachment.tim}${extLower}`; // Fallback to tim+ext if no hash
-
-                if (['.jpg', '.jpeg', '.png', '.gif'].includes(extLower)) {
-                    // Image handling with toggle logic
-                    let isFirstInstance = !renderedFullSizeImageHashes.has(filehash);
-                    if (isFirstInstance) {
-                        renderedFullSizeImageHashes.add(filehash);
-                    }
-
-                    const img = document.createElement('img');
-                    img.dataset.filehash = filehash;
-                    // img.dataset.thumbSrc is now set asynchronously
-                    img.dataset.thumbWidth = message.attachment.tn_w;
-                    img.dataset.thumbHeight = message.attachment.tn_h;
-                    img.dataset.isThumbnail = isFirstInstance ? 'false' : 'true'; // Determines initial display mode
-                    img.style.cursor = 'pointer';
-                    img.style.display = 'block';
-                    img.style.borderRadius = '3px';
-
-                    // Fallback web URLs
-                    const webFullSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
-                    const webThumbSrc = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}s.jpg`;
-
-                    img.dataset.fullSrc = webFullSrc; // Default to web URL, updated if local found
-                    img.dataset.thumbSrc = webThumbSrc; // Default to web URL, updated if local found
-
-                    const setImageProperties = () => {
-                        if (img.dataset.isThumbnail === 'true') {
-                            img.src = img.dataset.thumbSrc; // This will be local dataURL or web URL
-                            img.style.width = img.dataset.thumbWidth + 'px';
-                            img.style.height = img.dataset.thumbHeight + 'px';
-                            img.style.maxWidth = '';
-                            img.style.maxHeight = '';
-                        } else {
-                            img.src = img.dataset.fullSrc; // This will be local dataURL or web URL
-                            img.style.maxWidth = '100%';
-                            img.style.maxHeight = '400px';
-                            img.style.width = 'auto';
-                            img.style.height = 'auto';
-                        }
-                        // Add to uniqueImageViewerHashes only once, e.g., after full image processing promise resolves.
-                        // Or here, if we assume it's a unique image being processed.
-                        // Let's keep it tied to the full image processing.
-                    };
-
-                    // Initially set properties based on web URLs or if one of them is already a data URL (e.g. from a previous step)
-                    setImageProperties();
-
-
-                    img.addEventListener('click', () => {
-                        const currentlyThumbnail = img.dataset.isThumbnail === 'true';
-                        if (currentlyThumbnail) { // Toggle to full
-                            img.src = img.dataset.fullSrc; // Uses local dataURL or web URL
-                            img.style.maxWidth = '100%';
-                            img.style.maxHeight = '400px';
-                            img.style.width = 'auto';
-                            img.style.height = 'auto';
-                            img.dataset.isThumbnail = 'false';
-                        } else { // Toggle to thumbnail
-                            img.src = img.dataset.thumbSrc; // Uses local dataURL or web URL
-                            img.style.width = img.dataset.thumbWidth + 'px';
-                            img.style.height = img.dataset.thumbHeight + 'px';
-                            img.style.maxWidth = '';
-                            img.style.maxHeight = '';
-                            img.dataset.isThumbnail = 'true';
-                        }
-                    });
-
-                    // Promise for loading full-size image from IDB
-                    if (message.attachment.localStoreId && otkMediaDB) {
-                        mediaLoadPromises.push(new Promise((resolveMedia) => {
-                            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                            const store = transaction.objectStore('mediaStore');
-                            const request = store.get(message.attachment.localStoreId);
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob && !storedItem.isThumbnail) {
-                                    blobToDataURL(storedItem.blob)
-                                        .then(dataURL => {
-                                            img.dataset.fullSrc = dataURL; // Update with local dataURL
-                                            if (img.dataset.isThumbnail === 'false') { // If currently showing full, update src
-                                                img.src = dataURL;
-                                            }
-                                            uniqueImageViewerHashes.add(filehash); // Add to stats once full image is confirmed/processed
-                                            resolveMedia();
-                                        })
-                                        .catch(err => {
-                                            consoleError(`Error converting full image blob to Data URL for ${message.attachment.localStoreId}:`, err);
-                                            uniqueImageViewerHashes.add(filehash); // Still count it for stats even if fallback to web
-                                            resolveMedia(); // Resolve even on error, using web fallback
-                                        });
-                                } else {
-                                    if (storedItem && storedItem.isThumbnail) consoleWarn(`Expected full image but found thumb in IDB for ${message.attachment.localStoreId}`);
-                                    else if (!storedItem) consoleWarn(`Full image blob not found in IDB for ${message.attachment.localStoreId}. Using web URL.`);
-                                    uniqueImageViewerHashes.add(filehash); // Still count it
-                                    resolveMedia();
-                                }
-                            };
-                            request.onerror = (event) => {
-                                consoleError(`Error fetching full image ${message.attachment.localStoreId} from IDB:`, event.target.error);
-                                uniqueImageViewerHashes.add(filehash); // Still count it
-                                resolveMedia();
-                            };
-                        }));
-                    } else {
-                         uniqueImageViewerHashes.add(filehash); // No local full image, count based on web presence
-                    }
-
-                    // Promise for loading thumbnail image from IDB
-                    if (message.attachment.localThumbStoreId && otkMediaDB) {
-                        mediaLoadPromises.push(new Promise((resolveMedia) => {
-                            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                            const store = transaction.objectStore('mediaStore');
-                            const request = store.get(message.attachment.localThumbStoreId);
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob && storedItem.isThumbnail) {
-                                    blobToDataURL(storedItem.blob)
-                                        .then(dataURL => {
-                                            img.dataset.thumbSrc = dataURL; // Update with local dataURL for thumbnail
-                                            if (img.dataset.isThumbnail === 'true') { // If currently showing thumb, update src
-                                                img.src = dataURL;
-                                            }
-                                            resolveMedia();
-                                        })
-                                        .catch(err => {
-                                            consoleError(`Error converting thumbnail blob to Data URL for ${message.attachment.localThumbStoreId}:`, err);
-                                            resolveMedia(); // Resolve even on error, using web fallback for thumb
-                                        });
-                                } else {
-                                    if (storedItem && !storedItem.isThumbnail) consoleWarn(`Expected thumbnail but found full image in IDB for ${message.attachment.localThumbStoreId}`);
-                                    else if (!storedItem) consoleWarn(`Thumbnail blob not found in IDB for ${message.attachment.localThumbStoreId}. Using web URL.`);
-                                    resolveMedia();
-                                }
-                            };
-                            request.onerror = (event) => {
-                                consoleError(`Error fetching thumbnail ${message.attachment.localThumbStoreId} from IDB:`, event.target.error);
-                                resolveMedia();
-                            };
-                        }));
-                    }
-                    // If no localThumbStoreId, it defaults to webThumbSrc already set.
-                    attachmentDiv.appendChild(img);
-
-                } else if (['.webm', '.mp4'].includes(extLower)) {
-                    // Video handling: CSP might also affect blobs for videos.
-                    // For now, let's assume videos are less common or direct 4cdn links are fine.
-                    // If videos also break, they'll need similar dataURL or a different strategy.
-                    let videoSrc = null;
-                    const setupVideo = (src) => {
-                        const videoElement = document.createElement('video');
-                        // if (src && src.startsWith('blob:')) { // Only revoke if it's a blob URL
-                            // videoElement.onloadeddata = () => URL.revokeObjectURL(src); // Commented out for now
-                            // videoElement.onerror = () => URL.revokeObjectURL(src); // Commented out for now
-                        // }
-                        // Note: By not revoking, blob URLs will persist. This fixes playback after refresh/append,
-                        // but a more sophisticated memory management strategy for these URLs might be needed later.
-                        videoElement.src = src || `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${extLower}`; // Fallback
-                        videoElement.controls = true;
-                        videoElement.style.maxWidth = '100%';
-                        videoElement.style.maxHeight = '400px'; // Consistent max height
-                        videoElement.style.borderRadius = '3px';
-                        videoElement.style.display = 'block';
-                        attachmentDiv.appendChild(videoElement);
-                        if (message.attachment.filehash_db_key) {
-                            if (isTopLevelMessage) {
-                                viewerTopLevelAttachedVideoHashes.add(message.attachment.filehash_db_key);
-                            }
-                            // uniqueVideoViewerHashes.add() removed as it's now obsolete for stats.
-                        }
-                    };
-
-                    if (message.attachment.localStoreId && otkMediaDB) {
-                         mediaLoadPromises.push(new Promise((resolveMedia) => {
-                            const transaction = otkMediaDB.transaction(['mediaStore'], 'readonly');
-                            const store = transaction.objectStore('mediaStore');
-                            const request = store.get(message.attachment.localStoreId);
-                            request.onsuccess = (event) => {
-                                const storedItem = event.target.result;
-                                if (storedItem && storedItem.blob) {
-                                    videoSrc = URL.createObjectURL(storedItem.blob);
-                                    setupVideo(videoSrc);
-                                } else {
-                                    setupVideo(null); // Fallback to web URL
-                                }
-                                resolveMedia();
-                            };
-                            request.onerror = (event) => {
-                                consoleError(`Error fetching video ${message.attachment.localStoreId} from IDB:`, event.target.error);
-                                setupVideo(null); // Fallback to web URL
-                                resolveMedia();
-                            };
-                        }));
-                    } else {
-                        setupVideo(null); // No local, use web URL
-                    }
+                if (shouldDisplayFilenames) {
+                    const filenameLink = document.createElement('a');
+                    filenameLink.className = 'attachment-filename';
+                    filenameLink.textContent = `${message.attachment.filename} (${message.attachment.ext.substring(1)})`;
+                    filenameLink.href = `https://i.4cdn.org/${actualBoardForLink}/${message.attachment.tim}${message.attachment.ext}`;
+                    filenameLink.target = "_blank";
+                    filenameLink.style.cssText = "color: #60a5fa; display: block; margin-bottom: 5px; text-decoration: underline;";
+                    attachmentDiv.appendChild(filenameLink);
                 }
-                // Fallback for other file types or if something went wrong (though images/videos are main media)
-                // This part might need adjustment if createThumbnailElement was handling non-image/video files too.
-                // For now, assume if not image/video, it doesn't go through this specific media path.
 
-                if (attachmentDiv.hasChildNodes()) {
-                    messageDiv.appendChild(attachmentDiv);
-                }
+                // Call helper function to populate media
+                _populateAttachmentDivWithMedia(
+                    attachmentDiv,
+                    message,
+                    actualBoardForLink,
+                    mediaLoadPromises,
+                    uniqueImageViewerHashes,
+                    isTopLevelMessage,
+                    'default', // layoutStyle
+                    renderedFullSizeImageHashes, // Pass for consistent image thumbnail logic
+                    viewerTopLevelAttachedVideoHashes,
+                    otkMediaDB
+                );
+
+                // Always append attachmentDiv if message.attachment.tim exists,
+                // trusting _populateAttachmentDivWithMedia to handle content.
+                // Removed: if (attachmentDiv.hasChildNodes())
+                messageDiv.appendChild(attachmentDiv);
             }
             return messageDiv;
         } // End of else (default layout)
@@ -2749,9 +2913,8 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 width: 100%; /* Ensure it spans the container if not already */
                 box-sizing: border-box; /* Include padding in width calculation */
             `;
-            const now = new Date();
-            const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            separatorDiv.textContent = `--- New messages below loaded at ${timeString} ---`;
+            const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            separatorDiv.textContent = `--- ${currentTime} : ${newMessages.length} New Messages Loaded ---`;
             messagesContainer.appendChild(separatorDiv);
             consoleLog("[appendNewMessagesToViewer] Appended separator line.");
         }
@@ -2760,8 +2923,8 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
         for (const message of newMessages) {
             const boardForLink = message.board || 'b';
             const threadColor = getThreadColor(message.originalThreadId); // Get thread color for accent
-            // For messages directly appended to the viewer, isTopLevelMessage is true, currentDepth is 0
-            const messageElement = createMessageElementDOM(message, mediaLoadPromises, uniqueImageViewerHashes, boardForLink, true, 0, threadColor);
+            // For messages directly appended to the viewer, isTopLevelMessage is true, currentDepth is 0, and parent is null
+            const messageElement = createMessageElementDOM(message, mediaLoadPromises, [], uniqueImageViewerHashes, boardForLink, true, 0, threadColor, null);
             messagesContainer.appendChild(messageElement);
             renderedMessageIdsInViewer.add(message.id);
             consoleLog(`[appendNewMessagesToViewer] Appended message ${message.id}.`);
@@ -2770,6 +2933,13 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
         consoleLog(`[appendNewMessagesToViewer] Appended ${newMessages.length} elements. Waiting for media promises.`);
 
         Promise.all(mediaLoadPromises).then(async () => { // Make async to use await for setTimeout promise
+            if (window.twttr && window.twttr.widgets) {
+                const tweetEmbeds = messagesContainer.querySelectorAll('.otk-tweet-embed');
+                if (tweetEmbeds.length > 0) {
+                    consoleLog(`[Twitter] Found ${tweetEmbeds.length} new tweet embeds to render.`);
+                    window.twttr.widgets.load(tweetEmbeds);
+                }
+            }
             consoleLog("[appendNewMessagesToViewer] Media promises resolved.");
 
             hideLoadingScreen(); // Hide loading screen first
@@ -3039,7 +3209,7 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                                                 let currentVideoCount = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
                                                 localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, (currentVideoCount + 1).toString());
                                             }
-                                            updateDisplayedStatistics();
+                                            updateDisplayedStatistics({});
                                             resolvePut();
                                         };
                                         putRequest.onerror = (putEvent) => {
@@ -3184,7 +3354,7 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
     }
 
     async function backgroundRefreshThreadsAndMessages(options = {}) { // Added options parameter
-        const { skipViewerUpdate = false } = options; // Destructure with default
+        const { skipViewerUpdate = false, isBackground = false } = options; // Destructure with default
 
         if (isManualRefreshInProgress) {
             consoleLog('[BG] Manual refresh in progress, skipping background refresh.');
@@ -3200,45 +3370,36 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
             const previousActiveThreadIds = new Set(activeThreads.map(id => Number(id)));
             consoleLog('[BG] Previous active threads:', Array.from(previousActiveThreadIds));
 
-            // Remove threads no longer in catalog
-            activeThreads = activeThreads.filter(threadId => {
-                const isLive = foundIds.has(Number(threadId));
-                if (!isLive) {
-                    consoleLog(`[BG] Thread ${threadId} no longer in catalog (now considered 'dead' for fetching purposes). Messages will be retained.`);
-                    // delete messagesByThreadId[threadId]; // Retain messages
-                    // delete threadColors[threadId]; // Handle threadColors in a later step
-                }
-                return isLive;
-            });
-
-            // Add new threads
+            // Per user request, messages should never be removed unless the "Restart Tracker" button is clicked.
+            // Therefore, we no longer check for "dead" threads to remove them from the active list.
+            // We only add new threads that are not already in the active list.
             foundThreads.forEach(t => {
                 const threadIdNum = Number(t.id);
-                if (!previousActiveThreadIds.has(threadIdNum) && !activeThreads.includes(threadIdNum)) { // Check if it's truly new
+                if (!previousActiveThreadIds.has(threadIdNum)) {
                     consoleLog(`[BG] Adding new thread ${threadIdNum} from catalog scan.`);
                     activeThreads.push(threadIdNum);
-                    // Messages will be fetched below, color assigned on render or first message.
                 }
             });
             consoleLog(`[BG] Active threads after catalog sync: ${activeThreads.length}`, activeThreads);
 
-            const fetchPromisesBg = activeThreads.map(threadId =>
-                fetchThreadMessages(threadId)
-                    .then(messages => ({ threadId, messages, status: 'fulfilled' }))
-                    .catch(error => ({ threadId, error, status: 'rejected' }))
-            );
+            const fetchPromisesBg = activeThreads.map(threadId => {
+                return fetchThreadMessages(threadId)
+                    .then(result => ({ threadId, messages: result, status: 'fulfilled' }))
+                    .catch(error => ({ threadId, error, status: 'rejected' }));
+            });
 
-            const resultsBg = await Promise.allSettled(fetchPromisesBg);
+            const resultsBg = await Promise.all(fetchPromisesBg);
 
+            let allNewMessages = [];
             resultsBg.forEach(result => {
                 // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - Raw Promise.allSettled result:', JSON.stringify(result)); // Removed
-                if (result.status === 'fulfilled' && result.value) {
+                if (result.status === 'fulfilled' && result) {
                     // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - Fulfilled promise value:', JSON.stringify(result.value)); // Removed
-                    const { threadId, messages: newMessages, status: fetchStatus } = result.value;
+                    const { threadId, messages: newMessagesResult, status: fetchStatus } = result;
                     // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - Destructured - threadId:', threadId, 'fetchStatus (from wrapper):', fetchStatus, 'newMessages type:', typeof newMessages, 'is Array?:', Array.isArray(newMessages), 'length (if array):', Array.isArray(newMessages) ? newMessages.length : 'N/A'); // Removed
 
                     if (fetchStatus === 'rejected') {
-                        consoleError(`[BG] Error fetching thread ${threadId}:`, result.value.error);
+                        consoleError(`[BG] Error fetching thread ${threadId}:`, result.error);
                         return;
                     }
 
@@ -3246,25 +3407,28 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                     // consoleLog('[DebugRefreshV2][BG] backgroundRefresh - About to process newMessages for thread:', threadId, 'Value:', JSON.stringify(newMessages)); // Removed
 
                     // Handle 'not_modified' status from fetchThreadMessages
-                    if (newMessages && typeof newMessages === 'object' && newMessages.status === 'not_modified' && newMessages.threadId === threadId) {
+                    if (newMessagesResult && typeof newMessagesResult === 'object' && newMessagesResult.status === 'not_modified' && newMessagesResult.threadId === threadId) {
                         consoleLog(`[BG] Thread ${threadId} was not modified. Skipping message update for this thread.`);
-                    } else if (Array.isArray(newMessages) && newMessages.length > 0) { // Regular message array
+                    } else if (newMessagesResult && Array.isArray(newMessagesResult.messages) && newMessagesResult.messages.length > 0) { // Regular message array
                         // consoleLog(`[DebugRefreshV2][BG] backgroundRefresh - Processing ${newMessages.length} messages for thread ${threadId}.`); // Removed
-                        consoleLog(`[BG] Processing ${newMessages.length} messages for thread ${threadId}.`); // Standard log
+                        consoleLog(`[BG] Processing ${newMessagesResult.messages.length} messages for thread ${threadId}.`); // Standard log
                         let existing = messagesByThreadId[threadId] || [];
                         let existingIds = new Set(existing.map(m => m.id));
                         let updatedMessages = [...existing];
-                        newMessages.forEach(m => {
+                        let newMessagesInThread = [];
+                        newMessagesResult.messages.forEach(m => {
                             if (!existingIds.has(m.id)) {
                                 updatedMessages.push(m);
+                                newMessagesInThread.push(m);
                             }
                         });
+                        allNewMessages.push(...newMessagesInThread);
                         updatedMessages.sort((a, b) => a.time - b.time);
                         messagesByThreadId[threadId] = updatedMessages;
                         if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
-                            messagesByThreadId[threadId][0].title = newMessages[0].title;
+                            messagesByThreadId[threadId][0].title = newMessagesResult.messages[0].title;
                         }
-                    } else if (newMessages && newMessages.length === 0) {
+                    } else if (newMessagesResult && newMessagesResult.messages.length === 0) {
                         consoleLog(`[BG] No new messages returned or thread is empty for active thread ${threadId}.`);
                         // Note: Thread pruning logic based on catalog scan is primary.
                         // If fetchThreadMessages returns empty for a 404, it might have been removed from activeThreads already by catalog logic.
@@ -3286,15 +3450,8 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
 
             consoleLog('[BG] Data saved. Dispatching otkMessagesUpdated event.');
             window.dispatchEvent(new CustomEvent('otkMessagesUpdated'));
-            renderThreadList();
-            updateDisplayedStatistics();
-            consoleLog('[BG] Background refresh complete.');
 
-            // No viewer updates from background refresh if skipViewerUpdate is true (it defaults to false)
-            // This function doesn't directly update the viewer itself, but triggers events or relies on other calls.
-            // The main concern is if it were to call renderMessagesInViewer or appendNewMessagesToViewer.
-            // Currently, it does not, so skipViewerUpdate has no direct effect here yet unless other logic is added.
-            // This is more of a placeholder if background tasks were to interact with the viewer DOM.
+            consoleLog('[BG] Background refresh complete.');
 
         } catch (error) {
             consoleError('[BG] Error during background refresh:', error.message, error.stack);
@@ -3308,6 +3465,13 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
         isManualRefreshInProgress = true;
         showLoadingScreen("Initializing refresh..."); // Initial message
         try {
+            localStorage.removeItem('otkNewMessagesCount');
+            localStorage.removeItem('otkNewImagesCount');
+            localStorage.removeItem('otkNewVideosCount');
+            const refreshButton = document.getElementById('otk-refresh-data-btn');
+            if (refreshButton) {
+                refreshButton.classList.remove('otk-button-pulse');
+            }
             await new Promise(resolve => setTimeout(resolve, 50)); // Ensure loading screen renders
 
             updateLoadingProgress(5, "Scanning catalog for OTK threads...");
@@ -3319,23 +3483,13 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
             const previousActiveThreadIds = new Set(activeThreads.map(id => Number(id)));
             let threadsToFetch = []; // Store actual threadIds to fetch
 
-            activeThreads = activeThreads.filter(threadId => {
-                const isLive = foundIds.has(Number(threadId));
-                if (!isLive) {
-                    consoleLog(`[Manual] Thread ${threadId} no longer in catalog (now considered 'dead' for fetching purposes). Messages will be retained.`);
-                    // delete messagesByThreadId[threadId]; // Retain messages
-                    // delete threadColors[threadId]; // Handle threadColors in a later step
-                }
-                return isLive;
-            });
-
+            // Per user request, messages should never be removed unless the "Restart Tracker" button is clicked.
             foundThreads.forEach(t => {
                 const threadIdNum = Number(t.id);
-                if (!previousActiveThreadIds.has(threadIdNum) && !activeThreads.includes(threadIdNum)) {
+                if (!previousActiveThreadIds.has(threadIdNum)) {
                     consoleLog(`[Manual] Adding new thread ${threadIdNum} to active list.`);
                     activeThreads.push(threadIdNum);
                 }
-                // All found threads (new or existing) are candidates for fetching
                 if (!threadsToFetch.includes(threadIdNum)) {
                     threadsToFetch.push(threadIdNum);
                 }
@@ -3360,62 +3514,53 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
             let threadsProcessedCount = 0;
             const totalThreadsToProcess = threadsToFetch.length;
 
-            // Use a sequential loop for fetching to update loading screen more granularly per thread
-            for (const threadId of threadsToFetch) {
-                threadsProcessedCount++;
-                const progressPercentage = 15 + Math.round((threadsProcessedCount / totalThreadsToProcess) * 75); // 15% (catalog) + 75% (fetching/processing)
+            const fetchPromises = threadsToFetch.map(threadId => fetchThreadMessages(threadId));
+            const results = await Promise.all(fetchPromises);
 
+            results.forEach((result, index) => {
+                const threadId = threadsToFetch[index];
+                threadsProcessedCount++;
+                const progressPercentage = 15 + Math.round((threadsProcessedCount / totalThreadsToProcess) * 75);
                 let statusText = `Processing thread ${threadsProcessedCount}/${totalThreadsToProcess} (ID: ${threadId})...`;
-                if (totalNewMessagesThisRefresh > 0 || totalNewImagesThisRefresh > 0) {
-                    statusText += `\nSo far: ${totalNewMessagesThisRefresh} new msgs, ${totalNewImagesThisRefresh} imgs (${totalImagesStoredThisRefresh} stored), ${totalNewVideosThisRefresh} vids.`;
-                }
                 updateLoadingProgress(progressPercentage, statusText);
 
-                try {
-                    const result = await fetchThreadMessages(threadId); // fetchThreadMessages is already async
-
-                    if (result.status === 'not_modified') {
-                        consoleLog(`[Manual] Thread ${threadId} not modified. Skipping message update.`);
-                        continue; // Next thread
-                    }
-
-                    const newMessagesData = result.messages; // This is an array of message objects
-                    const counts = result.counts;
-
-                    if (Array.isArray(newMessagesData)) {
-                        let actualNewMessagesInThread = 0;
-                        if (newMessagesData.length > 0) {
-                            let existing = messagesByThreadId[threadId] || [];
-                            let existingIds = new Set(existing.map(m => m.id));
-                            let updatedMessages = [...existing];
-                            newMessagesData.forEach(m => {
-                                if (!existingIds.has(m.id)) {
-                                    updatedMessages.push(m);
-                                    actualNewMessagesInThread++;
-                                }
-                            });
-                            updatedMessages.sort((a, b) => a.time - b.time);
-                            messagesByThreadId[threadId] = updatedMessages;
-                            if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
-                                messagesByThreadId[threadId][0].title = newMessagesData[0].title;
-                            }
-                        }
-                        totalNewMessagesThisRefresh += actualNewMessagesInThread;
-                        totalNewImagesThisRefresh += counts.fetchedImages;
-                        totalNewVideosThisRefresh += counts.fetchedVideos;
-                        totalImagesStoredThisRefresh += counts.newlyStoredImages;
-                        // totalVideosStoredThisRefresh += counts.newlyStoredVideos; (will be 0)
-
-                        consoleLog(`[Manual] Processed thread ${threadId}. Fetched: ${counts.fetchedMessages} msgs, ${counts.fetchedImages} imgs, ${counts.fetchedVideos} vids. Added: ${actualNewMessagesInThread} new msgs. Stored: ${counts.newlyStoredImages} imgs.`);
-                    }
-                } catch (error) {
-                    consoleError(`[Manual] Error processing thread ${threadId} in loop:`, error);
-                    // Continue to next thread
+                if (result.status === 'not_modified') {
+                    consoleLog(`[Manual] Thread ${threadId} not modified. Skipping message update.`);
+                    return;
                 }
-            }
+
+                const newMessagesData = result.messages;
+                const counts = result.counts;
+
+                if (Array.isArray(newMessagesData)) {
+                    let actualNewMessagesInThread = 0;
+                    if (newMessagesData.length > 0) {
+                        let existing = messagesByThreadId[threadId] || [];
+                        let existingIds = new Set(existing.map(m => m.id));
+                        let updatedMessages = [...existing];
+                        newMessagesData.forEach(m => {
+                            if (!existingIds.has(m.id)) {
+                                updatedMessages.push(m);
+                                actualNewMessagesInThread++;
+                            }
+                        });
+                        updatedMessages.sort((a, b) => a.time - b.time);
+                        messagesByThreadId[threadId] = updatedMessages;
+                        if (messagesByThreadId[threadId].length > 0 && (!messagesByThreadId[threadId][0].title || messagesByThreadId[threadId][0].title === `Thread ${threadId}`)) {
+                            messagesByThreadId[threadId][0].title = newMessagesData[0].title;
+                        }
+                    }
+                    totalNewMessagesThisRefresh += actualNewMessagesInThread;
+                    totalNewImagesThisRefresh += counts.fetchedImages;
+                    totalNewVideosThisRefresh += counts.fetchedVideos;
+                    totalImagesStoredThisRefresh += counts.newlyStoredImages;
+
+                    consoleLog(`[Manual] Processed thread ${threadId}. Fetched: ${counts.fetchedMessages} msgs, ${counts.fetchedImages} imgs, ${counts.fetchedVideos} vids. Added: ${actualNewMessagesInThread} new msgs. Stored: ${counts.newlyStoredImages} imgs.`);
+                }
+            });
 
             // Final update to loading screen after loop
-            let finalStatusText = `Refresh complete. Added: ${totalNewMessagesThisRefresh} new msgs, ${totalNewImagesThisRefresh} imgs (${totalImagesStoredThisRefresh} stored), ${totalNewVideosThisRefresh} vids.`;
+            let finalStatusText = `Refresh processing complete. Finalizing...`; // Simplified
             updateLoadingProgress(90, finalStatusText);
 
 
@@ -3434,9 +3579,9 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
 
             consoleLog('[Manual] Core refresh actions complete.');
             updateLoadingProgress(95, "Finalizing data and updating display...");
-            renderThreadList();
+            renderThreadList(Array.from(foundIds));
             window.dispatchEvent(new CustomEvent('otkMessagesUpdated'));
-            updateDisplayedStatistics();
+            updateDisplayedStatistics({ catalogThreadIds: foundIds });
 
             // New logic for incremental append or full render
             const messagesContainer = document.getElementById('otk-messages-container'); // Still needed to check if viewer is open and has container
@@ -3460,9 +3605,6 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 if (viewerIsOpen && newMessagesToAppend.length > 0) {
                     consoleLog(`[Manual Refresh] Viewer is open, appending ${newMessagesToAppend.length} new messages.`);
                     await appendNewMessagesToViewer(newMessagesToAppend);
-                } else if (viewerIsOpen) {
-                    consoleLog('[Manual Refresh] Viewer is open, but no new messages to append (or update skipped). Re-rendering for consistency.');
-                    await renderMessagesInViewer({ isToggleOpen: false });
                 }
             } else {
                 consoleLog('[Refresh] Viewer update skipped as requested by options.');
@@ -3511,6 +3653,9 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
             localStorage.removeItem(SEEN_EMBED_URL_IDS_KEY);
             localStorage.setItem(LOCAL_IMAGE_COUNT_KEY, '0');
             localStorage.setItem(LOCAL_VIDEO_COUNT_KEY, '0');
+            localStorage.removeItem('otkNewMessagesCount');
+            localStorage.removeItem('otkNewImagesCount');
+            localStorage.removeItem('otkNewVideosCount');
             localStorage.removeItem(THEME_SETTINGS_KEY);
             consoleLog('[Clear] LocalStorage (threads, messages, seen embeds, media counts, ACTIVE theme) cleared/reset. CUSTOM THEMES PRESERVED.');
 
@@ -3539,7 +3684,7 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
             // Explicitly re-render the viewer if it was open, using the fresh data.
             if (viewerWasOpen) {
                 consoleLog('[Clear] Re-rendering viewer with fresh data after clear.');
-                await renderMessagesInViewer({ isToggleOpen: false }); // isToggleOpen: false typically scrolls to bottom or default.
+                await renderMessagesInViewer(); // isToggleOpen: false typically scrolls to bottom or default.
             }
             // window.dispatchEvent(new CustomEvent('otkClearViewerDisplay')); // Removed as direct render is now handled.
             consoleLog('[Clear] Clear and Refresh data processing complete.');
@@ -3548,8 +3693,8 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
         } finally {
             isManualRefreshInProgress = false;
             consoleLog('[Clear] Manual refresh flag reset.');
-            renderThreadList(); // Update GUI bar with (now minimal) live threads
-            updateDisplayedStatistics(); // Update stats based on cleared and re-fetched data
+            renderThreadList([]); // Update GUI bar with (now minimal) live threads
+            updateDisplayedStatistics({}); // Update stats based on cleared and re-fetched data
         }
     }
 
@@ -3610,7 +3755,7 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
             // Reset viewer-specific counts and update stats to reflect totals
             viewerActiveImageCount = null;
             viewerActiveVideoCount = null;
-            updateDisplayedStatistics();
+            updateDisplayedStatistics({});
         } else {
             otkViewer.style.display = 'block';
             document.body.style.overflow = 'hidden';
@@ -3627,49 +3772,86 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
                 otkViewer.classList.remove('otk-message-layout-newdesign');
             }
             // renderMessagesInViewer will calculate and set viewerActive counts and then call updateDisplayedStatistics
-            renderMessagesInViewer({isToggleOpen: true}); // Pass flag
+            renderMessagesInViewer(); // Pass flag
         }
     }
 
-    function updateDisplayedStatistics() {
-        const threadsTrackedElem = document.getElementById('otk-threads-tracked-stat');
-        const totalMessagesElem = document.getElementById('otk-total-messages-stat');
-        const localImagesElem = document.getElementById('otk-local-images-stat');
-        const localVideosElem = document.getElementById('otk-local-videos-stat');
+    function updateDisplayedStatistics(options = {}) {
+    const {
+        catalogThreadIds = null,
+        isBackgroundUpdate = false,
+        newMessagesCount = 0,
+        newImagesCount = 0,
+        newVideosCount = 0
+    } = options;
 
-        if (threadsTrackedElem && totalMessagesElem && localImagesElem && localVideosElem) {
-            const liveThreadsCount = activeThreads.length;
-            let totalMessagesCount = 0;
-            // Count all messages from all stored threads for "Total Messages"
-            for (const threadId in messagesByThreadId) {
-                if (messagesByThreadId.hasOwnProperty(threadId)) {
-                    totalMessagesCount += (messagesByThreadId[threadId] || []).length;
-                }
+    const threadsTrackedElem = document.getElementById('otk-threads-tracked-stat');
+    const totalMessagesElem = document.getElementById('otk-total-messages-stat');
+    const localImagesElem = document.getElementById('otk-local-images-stat');
+    const localVideosElem = document.getElementById('otk-local-videos-stat');
+
+    if (threadsTrackedElem && totalMessagesElem && localImagesElem && localVideosElem) {
+        // Use activeThreads.length for the count of all tracked threads.
+        // Use catalogThreadIds.size for "Live" threads if provided, otherwise it's 0.
+        const liveThreadsCount = catalogThreadIds ? catalogThreadIds.size : 0;
+        let totalMessagesCount = 0;
+        for (const threadId in messagesByThreadId) {
+            if (messagesByThreadId.hasOwnProperty(threadId)) {
+                totalMessagesCount += (messagesByThreadId[threadId] || []).length;
             }
-            const paddingLength = 4;
-            threadsTrackedElem.textContent = `- ${padNumber(liveThreadsCount, paddingLength)} Live Thread${liveThreadsCount === 1 ? '' : 's'}`;
-            // totalMessagesElem now reflects all stored messages, not just from activeThreads
-            totalMessagesElem.textContent = `- ${padNumber(totalMessagesCount, paddingLength)} Total Message${totalMessagesCount === 1 ? '' : 's'}`;
-
-            const imageCountFromStorage = parseInt(localStorage.getItem(LOCAL_IMAGE_COUNT_KEY) || '0');
-            const videoCountFromStorage = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
-
-            consoleLog(`[StatsDebug] updateDisplayedStatistics: viewerActiveImageCount = ${viewerActiveImageCount}, viewerActiveVideoCount = ${viewerActiveVideoCount}`);
-            consoleLog(`[StatsDebug] updateDisplayedStatistics: imageCountFromStorage = ${imageCountFromStorage}, videoCountFromStorage = ${videoCountFromStorage}`);
-
-            const imageCountToDisplay = viewerActiveImageCount !== null ? viewerActiveImageCount : imageCountFromStorage;
-            const videoCountToDisplay = viewerActiveVideoCount !== null ? viewerActiveVideoCount : videoCountFromStorage;
-
-            consoleLog(`[StatsDebug] updateDisplayedStatistics: imageCountToDisplay = ${imageCountToDisplay}, videoCountToDisplay = ${videoCountToDisplay}`);
-
-            localImagesElem.textContent = `- ${padNumber(imageCountToDisplay, paddingLength)} Image${imageCountToDisplay === 1 ? '' : 's'}`;
-            localVideosElem.textContent = `- ${padNumber(videoCountToDisplay, paddingLength)} Video${videoCountToDisplay === 1 ? '' : 's'}`;
-
-            // consoleLog(`Statistics updated: Live Threads: ${liveThreadsCount}, Total Messages: ${totalMessagesCount}, Images: ${imageCountToDisplay}, Videos: ${videoCountToDisplay}`);
-        } else {
-            consoleWarn('One or more statistics elements not found in GUI. Threads, Messages, Images, or Videos.');
         }
+
+        const paddingLength = 4;
+        if (catalogThreadIds) {
+            threadsTrackedElem.innerHTML = `<span>- ${padNumber(liveThreadsCount, paddingLength)} Live Thread${liveThreadsCount === 1 ? '' : 's'}</span>`;
+        }
+
+        const baseMessagesText = `- ${padNumber(totalMessagesCount, paddingLength)} Total Message${totalMessagesCount === 1 ? '' : 's'}`;
+        let newMessagesTotal = parseInt(localStorage.getItem('otkNewMessagesCount') || '0');
+        if (isBackgroundUpdate) {
+            newMessagesTotal += newMessagesCount;
+            localStorage.setItem('otkNewMessagesCount', newMessagesTotal);
+        }
+
+        let newMessagesText = '';
+        if (newMessagesTotal > 0) {
+            newMessagesText = `<span class="new-stat" style="color: var(--otk-background-updates-stats-text-color);"> (+${newMessagesTotal})</span>`;
+        }
+        totalMessagesElem.innerHTML = `<span>${baseMessagesText}</span> ${newMessagesText}`;
+
+        const imageCountFromStorage = parseInt(localStorage.getItem(LOCAL_IMAGE_COUNT_KEY) || '0');
+        const videoCountFromStorage = parseInt(localStorage.getItem(LOCAL_VIDEO_COUNT_KEY) || '0');
+
+        const imageCountToDisplay = viewerActiveImageCount !== null ? viewerActiveImageCount : imageCountFromStorage;
+        const videoCountToDisplay = viewerActiveVideoCount !== null ? viewerActiveVideoCount : videoCountFromStorage;
+
+        const baseImagesText = `- ${padNumber(imageCountToDisplay, paddingLength)} Image${imageCountToDisplay === 1 ? '' : 's'}`;
+        let newImagesTotal = parseInt(localStorage.getItem('otkNewImagesCount') || '0');
+        if (isBackgroundUpdate) {
+            newImagesTotal += newImagesCount;
+            localStorage.setItem('otkNewImagesCount', newImagesTotal);
+        }
+        let newImagesText = '';
+        if (newImagesTotal > 0) {
+            newImagesText = `<span class="new-stat" style="color: var(--otk-background-updates-stats-text-color);"> (+${newImagesTotal})</span>`;
+        }
+        localImagesElem.innerHTML = `<span>${baseImagesText}</span>&nbsp;${newImagesText}`;
+
+        const baseVideosText = `- ${padNumber(videoCountToDisplay, paddingLength)} Video${videoCountToDisplay === 1 ? '' : 's'}`;
+        let newVideosTotal = parseInt(localStorage.getItem('otkNewVideosCount') || '0');
+        if (isBackgroundUpdate) {
+            newVideosTotal += newVideosCount;
+            localStorage.setItem('otkNewVideosCount', newVideosTotal);
+        }
+        let newVideosText = '';
+        if (newVideosTotal > 0) {
+            newVideosText = `<span class="new-stat" style="color: var(--otk-background-updates-stats-text-color);"> (+${newVideosTotal})</span>`;
+        }
+        localVideosElem.innerHTML = `<span>${baseVideosText}</span>&nbsp;${newVideosText}`;
+    } else {
+        consoleWarn('One or more statistics elements not found in GUI. Threads, Messages, Images, or Videos.');
     }
+}
 
     // --- Button Implementations & Event Listeners ---
     const buttonContainer = document.getElementById('otk-button-container');
@@ -3739,20 +3921,23 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
 
         const btnRefresh = createTrackerButton('Refresh Data', 'otk-refresh-data-btn');
         btnRefresh.addEventListener('click', async () => {
+            if (isManualRefreshInProgress) {
+                consoleLog('[GUI] "Refresh Data" button clicked, but a refresh is already in progress. Ignoring.');
+                return; // Ignore click if a refresh is already happening
+            }
             consoleLog('[GUI] "Refresh Data" button clicked.');
-            // sessionStorage.setItem('otkManualRefreshClicked', 'true'); // Not currently used elsewhere
-            btnRefresh.disabled = true;
-            // isManualRefreshInProgress is set within refreshThreadsAndMessages
+            // isManualRefreshInProgress is set to true at the start of refreshThreadsAndMessages
+            // and false in its finally block. This prevents the race condition without disabling the button.
             try {
                 await refreshThreadsAndMessages();
                 consoleLog('[GUI] Data refresh complete.');
             } catch (error) {
                 consoleError('[GUI] Error during data refresh:', error);
             } finally {
-                // isManualRefreshInProgress is reset within refreshThreadsAndMessages
-                btnRefresh.disabled = false;
-                consoleLog('[GUI] Refresh operation finished.');
+                stopBackgroundRefresh();
+                startBackgroundRefresh();
             }
+            // No finally block needed here to re-enable the button, as it's never disabled.
         });
         // Appended to bottomRowContainer later
 
@@ -3876,30 +4061,49 @@ consoleLog(`[StatsDebug] Unique image hashes for viewer: ${uniqueImageViewerHash
     }
 
     // --- Background Refresh Control ---
+    let scrollTimeout = null;
+
     function startBackgroundRefresh() {
         if (localStorage.getItem(BACKGROUND_UPDATES_DISABLED_KEY) === 'true') {
             consoleLog('Background updates are disabled. Not starting refresh interval.');
             return;
         }
         if (backgroundRefreshIntervalId === null) { // Only start if not already running
-            let frequencySeconds = parseInt(localStorage.getItem(OTK_BG_UPDATE_FREQ_SECONDS_KEY) || "120", 10); // Default to 120s (2 min)
-            // Validate against the new effective range (120 seconds to 3600 seconds/1 hour)
-            if (isNaN(frequencySeconds) || frequencySeconds < 120 || frequencySeconds > 3600) {
-                frequencySeconds = 120; // Default (2 min) if stored value is invalid or out of overall bounds
-            }
-            const refreshIntervalMs = frequencySeconds * 1000;
+            const minUpdateMinutes = parseInt(localStorage.getItem('otkMinUpdateMinutes') || '2', 10);
+            const maxUpdateMinutes = parseInt(localStorage.getItem('otkMaxUpdateMinutes') || '5', 10);
+            const minUpdateSeconds = minUpdateMinutes * 60;
+            const maxUpdateSeconds = maxUpdateMinutes * 60;
+            const randomIntervalSeconds = Math.floor(Math.random() * (maxUpdateSeconds - minUpdateSeconds + 1)) + minUpdateSeconds;
+            let refreshIntervalMs = randomIntervalSeconds * 1000;
 
-            // Pass default options to backgroundRefreshThreadsAndMessages
-            backgroundRefreshIntervalId = setInterval(() => backgroundRefreshThreadsAndMessages(), refreshIntervalMs);
-            consoleLog(`Background refresh scheduled every ${frequencySeconds} seconds.`);
-        } else {
-            consoleLog('Background refresh interval already active (will use new frequency on next auto-restart if changed).');
+            const nextUpdateTimestamp = Date.now() + refreshIntervalMs;
+            localStorage.setItem('otkNextUpdateTimestamp', nextUpdateTimestamp);
+
+            const lastUpdateTimestamp = parseInt(localStorage.getItem('otkNextUpdateTimestamp') || '0', 10);
+            if (Date.now() > lastUpdateTimestamp) {
+                refreshIntervalMs = 0;
+            }
+
+
+            backgroundRefreshIntervalId = setTimeout(() => {
+                if (isSuspended) {
+                    consoleLog(`[BG] Updates suspended.`);
+                    stopBackgroundRefresh();
+                    showSuspendedScreen();
+                    return;
+                }
+                backgroundRefreshThreadsAndMessages({ isBackground: true });
+                backgroundRefreshIntervalId = null; // Reset for the next cycle
+                startBackgroundRefresh(); // Schedule the next update
+            }, refreshIntervalMs);
+
+            consoleLog(`Background refresh scheduled in ${minUpdateMinutes}-${maxUpdateMinutes} minutes. Next update at ~${new Date(Date.now() + refreshIntervalMs).toLocaleTimeString()}`);
         }
     }
 
     function stopBackgroundRefresh() {
         if (backgroundRefreshIntervalId) {
-            clearInterval(backgroundRefreshIntervalId);
+            clearTimeout(backgroundRefreshIntervalId);
             backgroundRefreshIntervalId = null;
             consoleLog('Background refresh stopped.');
         } else {
@@ -3952,7 +4156,7 @@ function handleIntersection(entries, observerInstance) {
                     if (iframe.src && iframe.src !== 'about:blank') {
                         consoleLog('[LazyLoad] Unloading iframe (scrolled out of view):', iframe.src);
                         // Attempt to pause YouTube videos via postMessage (best effort)
-                        if (iframe.src.includes("youtube.com/embed")) {
+                    if (iframe.contentWindow && iframe.src.includes("youtube.com/embed")) { // Check 2: src is a YouTube embed & contentWindow exists
                             try {
                                 iframe.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', 'https://www.youtube.com');
                             } catch (e) {
@@ -3999,15 +4203,11 @@ function forceViewerRerenderAfterThemeChange() {
     }
 }
 
+let stagedThemeSettings = {};
+
 function saveThemeSetting(key, value) {
-    let settings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
-    if (value === null || value === undefined) {
-        delete settings[key];
-    } else {
-        settings[key] = value;
-    }
-    localStorage.setItem(THEME_SETTINGS_KEY, JSON.stringify(settings));
-    consoleLog("Saved theme setting:", key, value);
+    stagedThemeSettings[key] = value;
+    consoleLog("Staged theme setting:", key, value);
 }
 
 function applyThemeSettings() {
@@ -4118,6 +4318,19 @@ function applyThemeSettings() {
         }
     });
 
+    if (otkViewer) {
+        if (settings.otkMsgDepth0DisableHeaderUnderline) {
+            otkViewer.classList.add('hide-underline');
+        } else {
+            otkViewer.classList.remove('hide-underline');
+        }
+        if (!settings.otkMsgDepth0DisplayMediaFilename) {
+            otkViewer.classList.add('hide-filenames');
+        } else {
+            otkViewer.classList.remove('hide-filenames');
+        }
+    }
+
     // Message Layout Dropdown
     if (settings.otkMessageLayoutStyle) {
         const layoutDropdown = document.getElementById('otk-message-layout-dropdown');
@@ -4144,30 +4357,12 @@ function applyThemeSettings() {
     if (settings.cogIconColor) {
         document.documentElement.style.setProperty('--otk-cog-icon-color', settings.cogIconColor);
         updateColorInputs('cog-icon', settings.cogIconColor);
-        const cogIconElement = document.getElementById('otk-settings-cog');
-        if (cogIconElement) {
-            cogIconElement.style.color = settings.cogIconColor;
-        }
-    } else {
-        const cogIconElement = document.getElementById('otk-settings-cog');
-        if (cogIconElement) {
-            cogIconElement.style.color = '';
-        }
     }
 
     // Disable Background Font Color
     if (settings.disableBgFontColor) {
         document.documentElement.style.setProperty('--otk-disable-bg-font-color', settings.disableBgFontColor);
         updateColorInputs('disable-bg-font', settings.disableBgFontColor);
-        const bgUpdateLabel = document.querySelector('label[for="otk-disable-bg-update-checkbox"]');
-        if (bgUpdateLabel) {
-            bgUpdateLabel.style.color = settings.disableBgFontColor;
-        }
-    } else {
-        const bgUpdateLabel = document.querySelector('label[for="otk-disable-bg-update-checkbox"]');
-        if (bgUpdateLabel) {
-            bgUpdateLabel.style.color = '';
-        }
     }
 
     // New Messages Divider Color
@@ -4233,6 +4428,27 @@ function applyThemeSettings() {
         document.documentElement.style.setProperty('--otk-loading-progress-bar-text-color', settings.loadingProgressBarTextColor);
         updateColorInputs('loading-progress-text', settings.loadingProgressBarTextColor);
     }
+
+    // Update checkboxes for new boolean settings
+    const newBooleanSettings = [
+        { key: 'otkMsgDepth0DisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth0-disable-header-underline' },
+        { key: 'otkMsgDepth0DisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth0-display-media-filename' },
+        { key: 'otkMsgDepth1DisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth1-disable-header-underline' },
+        { key: 'otkMsgDepth1DisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth1-display-media-filename' },
+        { key: 'otkMsgDepth2plusDisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth2plus-disable-header-underline' },
+        { key: 'otkMsgDepth2plusDisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth2plus-display-media-filename' }
+    ];
+
+    newBooleanSettings.forEach(opt => {
+        const checkbox = document.getElementById(`otk-${opt.idSuffix}-checkbox`);
+        if (checkbox) {
+            if (settings.hasOwnProperty(opt.key)) {
+                checkbox.checked = settings[opt.key];
+            } else {
+                checkbox.checked = opt.defaultValue;
+            }
+        }
+    });
 
     // Directly update loading screen styles
     const loadingOverlayElement = document.getElementById('otk-loading-overlay');
@@ -4388,63 +4604,44 @@ function setupOptionsWindow() {
     generalSettingsSection.appendChild(trackedKeywordsGroup);
 
     // --- Background Update Frequency Option ---
-    const bgUpdateFreqGroup = document.createElement('div');
-    // Apply Flexbox styling
-    bgUpdateFreqGroup.style.cssText = "display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 5px;";
-
-    const bgUpdateFreqLabel = document.createElement('label');
-    bgUpdateFreqLabel.textContent = "Update Frequency (min >= 2.0):"; // Updated label
-    bgUpdateFreqLabel.htmlFor = 'otk-bg-update-freq-input';
-    // Apply Flexbox label styling
-    bgUpdateFreqLabel.style.cssText = "font-size: 12px; text-align: left; flex-basis: 230px; flex-shrink: 0;";
-
-    const bgUpdateFreqControlsWrapper = document.createElement('div');
-    // Removed justify-content: flex-end;
-    bgUpdateFreqControlsWrapper.style.cssText = "display: flex; flex-grow: 1; align-items: center; gap: 8px; min-width: 0;";
-
-    const bgUpdateFreqInput = document.createElement('input');
-    bgUpdateFreqInput.type = 'number';
-    bgUpdateFreqInput.id = 'otk-bg-update-freq-input';
-    bgUpdateFreqInput.min = '2.0'; // UI min in minutes (120 seconds)
-    bgUpdateFreqInput.step = '0.5';
-    // Changed to width: 100% and text-align: right
-    bgUpdateFreqInput.style.cssText = "width: 100%; height: 25px; box-sizing: border-box; font-size: 12px; text-align: right;";
-
-    let initialStoredFreqSeconds = parseInt(localStorage.getItem(OTK_BG_UPDATE_FREQ_SECONDS_KEY) || "120", 10);
-    if (isNaN(initialStoredFreqSeconds) || initialStoredFreqSeconds < 120) {
-        initialStoredFreqSeconds = 120;
-    }
-    bgUpdateFreqInput.value = (initialStoredFreqSeconds / 60).toFixed(1);
-
-    bgUpdateFreqInput.addEventListener('change', () => {
-        let inputMinutes = parseFloat(bgUpdateFreqInput.value);
-        const minSecondsStorage = 120;
-        const maxSecondsStorage = 3600;
-        let newFrequencySecondsToStore;
-
-        if (isNaN(inputMinutes) || inputMinutes < (minSecondsStorage / 60)) {
-            newFrequencySecondsToStore = 120;
-        } else {
-            newFrequencySecondsToStore = Math.round(inputMinutes * 60);
-        }
-
-        if (newFrequencySecondsToStore < minSecondsStorage) {
-            newFrequencySecondsToStore = minSecondsStorage;
-        } else if (newFrequencySecondsToStore > maxSecondsStorage) {
-            newFrequencySecondsToStore = maxSecondsStorage;
-        }
-
-        bgUpdateFreqInput.value = (newFrequencySecondsToStore / 60).toFixed(1);
-        localStorage.setItem(OTK_BG_UPDATE_FREQ_SECONDS_KEY, newFrequencySecondsToStore.toString());
-        consoleLog(`Background update frequency saved as: ${newFrequencySecondsToStore} seconds. UI shows: ${bgUpdateFreqInput.value} min. Restarting interval.`);
-        stopBackgroundRefresh();
-        startBackgroundRefresh();
+    const minUpdateGroup = createThemeOptionRow({
+        labelText: "Minimum time between updates (minutes):",
+        storageKey: 'otkMinUpdateMinutes',
+        cssVariable: '--otk-min-update-seconds',
+        defaultValue: '2',
+        inputType: 'number',
+        unit: null,
+        min: 2,
+        max: 60,
+        idSuffix: 'min-update-seconds'
     });
+    generalSettingsSection.appendChild(minUpdateGroup);
 
-    bgUpdateFreqControlsWrapper.appendChild(bgUpdateFreqInput);
-    bgUpdateFreqGroup.appendChild(bgUpdateFreqLabel);
-    bgUpdateFreqGroup.appendChild(bgUpdateFreqControlsWrapper);
-    generalSettingsSection.appendChild(bgUpdateFreqGroup);
+    const maxUpdateGroup = createThemeOptionRow({
+        labelText: "Maximum time between updates (minutes):",
+        storageKey: 'otkMaxUpdateMinutes',
+        cssVariable: '--otk-max-update-seconds',
+        defaultValue: '5',
+        inputType: 'number',
+        unit: null,
+        min: 4,
+        max: 60,
+        idSuffix: 'max-update-seconds'
+    });
+    generalSettingsSection.appendChild(maxUpdateGroup);
+
+    const suspendAfterGroup = createThemeOptionRow({
+        labelText: "Suspend updates after (minutes):",
+        storageKey: 'otkSuspendAfterInactiveMinutes',
+        cssVariable: '--otk-suspend-after-inactive-minutes',
+        defaultValue: '1',
+        inputType: 'number',
+        unit: null,
+        min: 1,
+        max: 60,
+        idSuffix: 'suspend-after-inactive-minutes'
+    });
+    generalSettingsSection.appendChild(suspendAfterGroup);
 
     // --- Debugging Toggle Option ---
     const debugToggleGroup = document.createElement('div');
@@ -4546,6 +4743,60 @@ function setupOptionsWindow() {
             themeSectionHeading.textContent = '► Theme';
         }
     });
+
+    // Helper function to create a checkbox option row
+    function createCheckboxOptionRow(options) {
+        // options = { labelText, storageKey, defaultValue, idSuffix }
+        const group = document.createElement('div');
+        group.style.cssText = `
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            margin-bottom: 5px;
+        `;
+
+        const label = document.createElement('label');
+        label.textContent = options.labelText;
+        label.htmlFor = `otk-${options.idSuffix}-checkbox`;
+        label.style.cssText = `
+            font-size: 12px;
+            text-align: left;
+            flex-basis: 230px;
+            flex-shrink: 0;
+        `;
+
+        const controlsWrapperDiv = document.createElement('div');
+        controlsWrapperDiv.style.cssText = `
+            display: flex;
+            flex-grow: 1;
+            align-items: center;
+            justify-content: flex-end; /* Align checkbox to the right */
+            min-width: 0;
+        `;
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = `otk-${options.idSuffix}-checkbox`; // Ensure ID is unique and clear
+        checkbox.style.cssText = `
+            height: 16px; /* Standard checkbox size */
+            width: 16px;  /* Standard checkbox size */
+            flex-shrink: 0; /* Prevent checkbox from shrinking */
+        `;
+
+        // Initialize checkbox state
+        const savedValue = localStorage.getItem(options.storageKey);
+        checkbox.checked = (savedValue !== null) ? (savedValue === 'true') : options.defaultValue;
+
+        checkbox.addEventListener('change', () => {
+            saveThemeSetting(options.storageKey, checkbox.checked);
+        });
+
+        controlsWrapperDiv.appendChild(checkbox);
+        group.appendChild(label);
+        group.appendChild(controlsWrapperDiv);
+        return group;
+    }
 
     // Helper function to create a theme option row
     function createThemeOptionRow(options) {
@@ -4725,7 +4976,7 @@ function setupOptionsWindow() {
                     // The robust validation and saving happens on 'change'.
                     consoleWarn(`Color picker returned non-hex value during input: ${pickerValue}. Hex field not updated in real-time.`);
                 }
-                
+
                 // Call updateSetting to apply the change to CSS variables etc.
                 // updateSetting itself will validate the hex code before applying it.
                 updateSetting(pickerValue, true); // Pass flag true
@@ -4786,6 +5037,7 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Titles Text:", storageKey: 'guiThreadListTitleColor', cssVariable: '--otk-gui-threadlist-title-color', defaultValue: '#e0e0e0', inputType: 'color', idSuffix: 'threadlist-title' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Thread Times Text:", storageKey: 'guiThreadListTimeColor', cssVariable: '--otk-gui-threadlist-time-color', defaultValue: '#aaa', inputType: 'color', idSuffix: 'threadlist-time' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Stats Text:", storageKey: 'actualStatsTextColor', cssVariable: '--otk-stats-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'actual-stats-text' }));
+    themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Background Updates Stats Text:", storageKey: 'backgroundUpdatesStatsTextColor', cssVariable: '--otk-background-updates-stats-text-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'background-updates-stats-text' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Cog Icon:", storageKey: 'cogIconColor', cssVariable: '--otk-cog-icon-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'cog-icon' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Disable Background Update Text:", storageKey: 'disableBgFontColor', cssVariable: '--otk-disable-bg-font-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'disable-bg-font' }));
 
@@ -4868,9 +5120,8 @@ function setupOptionsWindow() {
 
     messageLayoutDropdown.addEventListener('change', () => {
         const selectedLayout = messageLayoutDropdown.value;
-        localStorage.setItem(layoutSettingKey, selectedLayout);
+        saveThemeSetting(layoutSettingKey, selectedLayout);
         consoleLog(`Message layout changed to: ${selectedLayout}`);
-        forceViewerRerenderAfterThemeChange();
     });
 
     layoutDropdownGroup.appendChild(layoutDropdownLabel);
@@ -4882,10 +5133,63 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "GUI Bottom Border:", storageKey: 'guiBottomBorderColor', cssVariable: '--otk-gui-bottom-border-color', defaultValue: '#555', inputType: 'color', idSuffix: 'gui-bottom-border' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Messages Divider:", storageKey: 'newMessagesDividerColor', cssVariable: '--otk-new-messages-divider-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-divider' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "New Messages Text:", storageKey: 'newMessagesFontColor', cssVariable: '--otk-new-messages-font-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'new-msg-font' }));
-    
+
     // Anchor Highlight Colors
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Anchor Highlight Background:", storageKey: 'anchorHighlightBgColor', cssVariable: '--otk-anchor-highlight-bg-color', defaultValue: '#4a4a3a', inputType: 'color', idSuffix: 'anchor-bg' }));
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Anchor Highlight Border:", storageKey: 'anchorHighlightBorderColor', cssVariable: '--otk-anchor-highlight-border-color', defaultValue: '#FFD700', inputType: 'color', idSuffix: 'anchor-border' }));
+
+    const tweetEmbedModeGroup = document.createElement('div');
+    tweetEmbedModeGroup.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        margin-bottom: 5px;
+    `;
+    const tweetEmbedModeLabel = document.createElement('label');
+    tweetEmbedModeLabel.textContent = "Tweet Embeds:";
+    tweetEmbedModeLabel.htmlFor = 'otk-tweet-embed-mode-dropdown';
+    tweetEmbedModeLabel.style.cssText = `
+        font-size: 12px;
+        text-align: left;
+        flex-basis: 230px;
+        flex-shrink: 0;
+    `;
+    const tweetEmbedModeControlsWrapper = document.createElement('div');
+    tweetEmbedModeControlsWrapper.style.cssText = `
+        display: flex;
+        flex-grow: 1;
+        align-items: center;
+    `;
+    const tweetEmbedModeDropdown = document.createElement('select');
+    tweetEmbedModeDropdown.id = 'otk-tweet-embed-mode-dropdown';
+    tweetEmbedModeDropdown.style.cssText = `
+        flex-grow: 1;
+        height: 25px;
+        box-sizing: border-box;
+        font-size: 12px;
+        text-align: center;
+        text-align-last: center;
+    `;
+    const tweetEmbedOptions = [
+        { label: 'Disabled', value: 'disabled' },
+        { label: 'Default', value: 'default' },
+        { label: 'Dark Mode', value: 'dark' }
+    ];
+    tweetEmbedOptions.forEach(opt => {
+        const optionElement = document.createElement('option');
+        optionElement.value = opt.value;
+        optionElement.textContent = opt.label;
+        tweetEmbedModeDropdown.appendChild(optionElement);
+    });
+    tweetEmbedModeDropdown.value = localStorage.getItem(TWEET_EMBED_MODE_KEY) || 'default';
+    tweetEmbedModeDropdown.addEventListener('change', () => {
+        saveThemeSetting(TWEET_EMBED_MODE_KEY, tweetEmbedModeDropdown.value);
+    });
+    tweetEmbedModeGroup.appendChild(tweetEmbedModeLabel);
+    tweetEmbedModeControlsWrapper.appendChild(tweetEmbedModeDropdown);
+    tweetEmbedModeGroup.appendChild(tweetEmbedModeControlsWrapper);
+    themeOptionsContainer.appendChild(tweetEmbedModeGroup);
 
     // themeOptionsContainer.appendChild(createDivider()); // Removed divider
 
@@ -4902,6 +5206,8 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Content Font:", storageKey: 'msgDepth0TextColor', cssVariable: '--otk-msg-depth0-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-text' })); // Default for original theme, new theme uses #333
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Font:", storageKey: 'msgDepth0HeaderTextColor', cssVariable: '--otk-msg-depth0-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth0-header-text' })); // Default for original theme, new theme uses #555
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Underline:", storageKey: 'viewerHeaderBorderColor', cssVariable: '--otk-viewer-header-border-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'viewer-header-border' }));
+    themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Hide Message Underline:", storageKey: 'otkMsgDepth0DisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth0-disable-header-underline' }));
+    themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Show Media Filenames:", storageKey: 'otkMsgDepth0DisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth0-display-media-filename' }));
 
     // --- Depth 1 Messages Section ---
     const depth1MessagesHeading = createSectionHeading('Depth 1 Messages');
@@ -4913,6 +5219,8 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Content Font:", storageKey: 'msgDepth1TextColor', cssVariable: '--otk-msg-depth1-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-text' })); // Default for original theme
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Font:", storageKey: 'msgDepth1HeaderTextColor', cssVariable: '--otk-msg-depth1-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth1-header-text' })); // Default for original theme
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Underline:", storageKey: 'viewerQuote1HeaderBorderColor', cssVariable: '--otk-viewer-quote1-header-border-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'viewer-quote1-border' }));
+    themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Hide Message Underline:", storageKey: 'otkMsgDepth1DisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth1-disable-header-underline' }));
+    themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Show Media Filenames:", storageKey: 'otkMsgDepth1DisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth1-display-media-filename' }));
 
     // --- Depth 2+ Messages Section ---
     const depth2plusMessagesHeading = createSectionHeading('Depth 2+ Messages');
@@ -4924,6 +5232,8 @@ function setupOptionsWindow() {
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Content Font:", storageKey: 'msgDepth2plusTextColor', cssVariable: '--otk-msg-depth2plus-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-text' })); // Default for original theme
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Font:", storageKey: 'msgDepth2plusHeaderTextColor', cssVariable: '--otk-msg-depth2plus-header-text-color', defaultValue: '#e6e6e6', inputType: 'color', idSuffix: 'msg-depth2plus-header-text' })); // Default for original theme
     themeOptionsContainer.appendChild(createThemeOptionRow({ labelText: "Header Underline:", storageKey: 'viewerQuote2plusHeaderBorderColor', cssVariable: '--otk-viewer-quote2plus-header-border-color', defaultValue: '#000000', inputType: 'color', idSuffix: 'viewer-quote2plus-border' }));
+    themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Hide Message Underline:", storageKey: 'otkMsgDepth2plusDisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth2plus-disable-header-underline' }));
+    themeOptionsContainer.appendChild(createCheckboxOptionRow({ labelText: "Show Media Filenames:", storageKey: 'otkMsgDepth2plusDisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth2plus-display-media-filename' }));
 
     // --- Options Panel Section ---
     const optionsPanelSectionHeading = createSectionHeading('Options Panel');
@@ -5023,48 +5333,16 @@ function setupOptionsWindow() {
         const themeName = newThemeNameInput.value.trim();
         if (!themeName) {
             alert("Please enter a name for the theme.");
-            newThemeNameInput.focus();
             return;
         }
 
-        const currentActiveSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
-        if (Object.keys(currentActiveSettings).length === 0) {
-            // If no settings are explicitly saved, gather them from current computed/default values
-            // This ensures a full theme object is saved.
-             const allConfigs = getAllOptionConfigs(); // Helper to get all theme configs
-             allConfigs.forEach(config => {
-                if (!currentActiveSettings[config.storageKey]) { // Only if not already set
-                    let value = getComputedStyle(document.documentElement).getPropertyValue(config.cssVariable)?.trim();
-                    if (!value && config.defaultValue) value = config.defaultValue; // Fallback to defined default
-                    if (value) currentActiveSettings[config.storageKey] = value;
-                }
-             });
-        }
+        const currentSettings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
+        let allCustomThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || {};
+        allCustomThemes[themeName] = currentSettings;
+        localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(allCustomThemes));
 
-        // consoleLog('[Debug Save Theme] Final currentActiveSettings object that will be saved for custom theme:', JSON.parse(JSON.stringify(currentActiveSettings))); // Retained original, more concise log
-        // The more verbose [SaveThemeDebug] logs are removed by this diff.
-        // The check for specific border colors can also be removed if not essential for general operation.
-        // For now, let's keep the original single debug line for the final object.
-        consoleLog('[Debug Save Theme] Final currentActiveSettings for custom theme:', JSON.parse(JSON.stringify(currentActiveSettings)));
-
-        let customThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || [];
-        const existingThemeIndex = customThemes.findIndex(t => t.name === themeName);
-
-        if (existingThemeIndex > -1) {
-            if (!confirm(`A theme named "${themeName}" already exists. Overwrite it?`)) {
-                return;
-            }
-            customThemes[existingThemeIndex].settings = currentActiveSettings;
-            consoleLog(`Custom theme "${themeName}" overwritten.`);
-        } else {
-            customThemes.push({ name: themeName, settings: currentActiveSettings });
-            consoleLog(`Custom theme "${themeName}" saved.`);
-        }
-
-        localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(customThemes));
-        newThemeNameInput.value = ''; // Clear input
-        populateCustomThemesDropdown(); // To be created in next step
-        alert(`Theme "${themeName}" saved successfully!`);
+        alert(`Theme "${themeName}" saved!`);
+        populateCustomThemesDropdown();
     });
 
     function populateCustomThemesDropdown() {
@@ -5161,36 +5439,38 @@ function setupOptionsWindow() {
     });
 
     loadThemeButton.addEventListener('click', () => {
-        const selectedThemeNameInDropdown = customThemesDropdown.value;
+        const selectedThemeName = customThemesDropdown.value;
 
-        if (selectedThemeNameInDropdown === "__REVERT__") {
-            alert("Cannot 'load' the active settings. They are already active or have been reverted. Select a custom theme to load.");
+        if (selectedThemeName === "__REVERT__" || !selectedThemeName || (customThemesDropdown.selectedOptions[0] && customThemesDropdown.selectedOptions[0].disabled)) {
+            alert("Please select a valid custom theme to load.");
             return;
         }
 
-        if (!selectedThemeNameInDropdown || customThemesDropdown.selectedOptions.length === 0 || (customThemesDropdown.selectedOptions[0] && customThemesDropdown.selectedOptions[0].disabled)) {
-            alert("Please select a theme from the dropdown to load.");
+        const customThemes = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY)) || [];
+        const themeToLoad = customThemes.find(t => t.name === selectedThemeName);
+
+        if (!themeToLoad) {
+            alert(`Error: Could not find the theme "${selectedThemeName}" to load.`);
             return;
         }
 
-        // At this point, if a theme was being previewed, its settings are already in THEME_SETTINGS_KEY
-        // and applied to the UI via applyThemeSettings() from the dropdown's 'change' listener.
-        // So, the "Load" action is effectively confirming the preview.
-        // We just need to ensure prePreviewSettings is cleared as the preview is now the active setting.
+        consoleLog(`Loading custom theme: "${selectedThemeName}"`);
 
-        // consoleLog(`[LoadThemeDebug] Load button clicked. Theme "${selectedThemeNameInDropdown}" is now permanently active.`); // Removed
-        // THEME_SETTINGS_KEY already has the previewed theme's settings.
-        // applyThemeSettings() was already called when preview started.
+        // 1. Reset all theme settings to their base defaults first.
+        resetAllThemeSettingsToDefault(false); // Pass false to prevent confirmation prompt
 
-        // Standard log for this action:
-        consoleLog(`Theme "${selectedThemeNameInDropdown}" confirmed as active theme.`);
-        prePreviewSettings = null; // Clear pre-preview state as current settings are now committed.
-        currentlyPreviewingThemeName = null; // No longer just previewing.
-        customThemesDropdown.value = "__REVERT__"; // Set dropdown to show "Active Settings" as current state.
+        // 2. Set the new theme's settings into the active settings key.
+        localStorage.setItem(THEME_SETTINGS_KEY, JSON.stringify(themeToLoad.settings));
 
-        alert(`Theme "${selectedThemeNameInDropdown}" is now the active theme.`);
-        // No, we don't call applyThemeSettings() again unless THEME_SETTINGS_KEY changed, which it hasn't here.
-        // The settings from the preview *are* the new active settings.
+        // 3. Apply the newly loaded settings.
+        applyThemeSettings();
+
+        // 4. Clear any preview-related state.
+        prePreviewSettings = null;
+        currentlyPreviewingThemeName = null;
+        customThemesDropdown.value = "__REVERT__"; // Set dropdown to show "Active Settings"
+
+        alert(`Theme "${selectedThemeName}" loaded successfully.`);
     });
 
     deleteThemeButton.addEventListener('click', () => {
@@ -5227,6 +5507,32 @@ function setupOptionsWindow() {
     resetAllColorsButton.id = 'otk-reset-all-colors-btn'; // Keep ID if applyThemeSettings uses it
     resetAllColorsButton.style.cssText = "margin-top: 20px; padding: 5px 10px; display: block; margin-left: auto; margin-right: auto;";
     themeOptionsContainer.appendChild(resetAllColorsButton);
+
+    const applyButton = document.createElement('button');
+    applyButton.textContent = 'Apply Changes';
+    applyButton.style.cssText = `
+        display: block;
+        width: 100%;
+        padding: 10px;
+        margin-top: 15px;
+        background-color: #4CAF50;
+        color: white;
+        border: none;
+        border-radius: 0 0 5px 5px;
+        cursor: pointer;
+        font-size: 16px;
+    `;
+    optionsWindow.appendChild(applyButton);
+
+    applyButton.addEventListener('click', () => {
+        let settings = JSON.parse(localStorage.getItem(THEME_SETTINGS_KEY)) || {};
+        Object.assign(settings, stagedThemeSettings);
+        localStorage.setItem(THEME_SETTINGS_KEY, JSON.stringify(settings));
+        stagedThemeSettings = {};
+        applyThemeSettings();
+        forceViewerRerenderAfterThemeChange();
+        alert('Settings applied!');
+    });
 
     // Helper function to get all theme configurations (used by save and reset)
     function getAllOptionConfigs() {
@@ -5287,20 +5593,26 @@ function setupOptionsWindow() {
     }
 
 
-    resetAllColorsButton.addEventListener('click', () => {
-        if (!confirm("Are you sure you want to reset all theme settings to their defaults?")) {
+    function resetAllThemeSettingsToDefault(promptUser = true) {
+        if (promptUser && !confirm("Are you sure you want to reset all theme settings to their defaults?")) {
             return;
         }
+
         consoleLog("Resetting all theme settings to default...");
+        // Clear the active theme settings from localStorage.
+        localStorage.removeItem(THEME_SETTINGS_KEY);
+
         const allOptionConfigs = getAllOptionConfigs();
 
         allOptionConfigs.forEach(opt => {
+            // Remove the inline style to revert to the stylesheet's default.
             document.documentElement.style.removeProperty(opt.cssVariable);
-            saveThemeSetting(opt.storageKey, null);
 
+            // Update the input fields in the options panel to reflect the default values.
             const mainInput = document.getElementById(`otk-${opt.idSuffix}`);
             const hexInput = opt.inputType === 'color' ? document.getElementById(`otk-${opt.idSuffix}-hex`) : null;
 
+            // Get the default value from the stylesheet or the config's fallback.
             let cssDefaultValue = getComputedStyle(document.documentElement).getPropertyValue(opt.cssVariable)?.trim() || opt.defaultValue;
             if (opt.unit && cssDefaultValue.endsWith(opt.unit)) {
                 cssDefaultValue = cssDefaultValue.replace(opt.unit, '');
@@ -5311,11 +5623,37 @@ function setupOptionsWindow() {
 
             if (opt.storageKey === 'cogIconColor') {
                 const cogIcon = document.getElementById('otk-settings-cog');
-                if(cogIcon) cogIcon.style.color = '';
+                if (cogIcon) cogIcon.style.color = ''; // Revert to stylesheet
             }
         });
-        // applyThemeSettings(); // Call to refresh all inputs based on new defaults
-        alert("All theme settings have been reset to their defaults.");
+
+        // Also reset new boolean settings to their defaults
+        const newBooleanSettings = [
+            { key: 'otkMsgDepth0DisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth0-disable-header-underline' },
+            { key: 'otkMsgDepth0DisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth0-display-media-filename' },
+            { key: 'otkMsgDepth1DisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth1-disable-header-underline' },
+            { key: 'otkMsgDepth1DisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth1-display-media-filename' },
+            { key: 'otkMsgDepth2plusDisableHeaderUnderline', defaultValue: false, idSuffix: 'msg-depth2plus-disable-header-underline' },
+            { key: 'otkMsgDepth2plusDisplayMediaFilename', defaultValue: true, idSuffix: 'msg-depth2plus-display-media-filename' }
+        ];
+        newBooleanSettings.forEach(opt => {
+            const checkbox = document.getElementById(`otk-${opt.idSuffix}-checkbox`);
+            if (checkbox) {
+                checkbox.checked = opt.defaultValue;
+            }
+        });
+
+        // The applyThemeSettings() call is no longer needed here if called by the initiator.
+        // If called from the reset button, it should call it.
+        // Let's call it for the standalone reset case.
+        if (promptUser) {
+            applyThemeSettings();
+            alert("All theme settings have been reset to their defaults.");
+        }
+    }
+
+    resetAllColorsButton.addEventListener('click', () => {
+        resetAllThemeSettingsToDefault(true); // true to prompt user
     });
 
     // Event Listeners for cog and close
@@ -5398,6 +5736,29 @@ function setupOptionsWindow() {
         }
     });
 
+    function resetInactivityTimer() {
+        if (scrollTimeout) {
+            clearTimeout(scrollTimeout);
+        }
+        if (isSuspended) {
+            consoleLog("[Activity] Resuming background updates.");
+            isSuspended = false;
+            hideSuspendedScreen();
+            startBackgroundRefresh();
+        }
+        const suspendAfterInactiveMinutes = parseInt(localStorage.getItem('otkSuspendAfterInactiveMinutes') || '30', 10);
+        scrollTimeout = setTimeout(() => {
+            consoleLog(`[Inactivity] No activity for ${suspendAfterInactiveMinutes} minutes, suspending background updates.`);
+            isSuspended = true;
+            stopBackgroundRefresh();
+            showSuspendedScreen();
+        }, suspendAfterInactiveMinutes * 60 * 1000);
+    }
+
+    ['scroll', 'mousemove', 'mousedown', 'keypress'].forEach(activityEvent => {
+        window.addEventListener(activityEvent, resetInactivityTimer);
+    });
+
     consoleLog("Options Window setup complete with drag functionality.");
 }
 
@@ -5414,6 +5775,7 @@ async function main() {
             --otk-options-text-color: #e6e6e6; /* For text within the options panel */
             --otk-title-text-color: #e6e6e6; /* Default for main title */
             --otk-stats-text-color: #e6e6e6; /* For the actual stats text numbers in GUI bar */
+            --otk-background-updates-stats-text-color: #FFD700; /* For the 'new' stats text */
             --otk-viewer-bg-color: #181818;
             --otk-gui-threadlist-title-color: #e0e0e0;
             --otk-gui-threadlist-time-color: #aaa;
@@ -5609,6 +5971,12 @@ async function main() {
             border: 1px solid var(--otk-anchor-highlight-border-color) !important;
             /* Add other styles if needed, e.g., box-shadow */
         }
+        .otk-viewer.hide-underline .otk-header-div {
+            border-bottom: none !important;
+        }
+        .otk-viewer.hide-filenames .attachment-filename {
+            display: none !important;
+        }
             .otk-youtube-embed-wrapper.otk-embed-inline {
                 /* max-width and margins are now controlled by inline styles in createYouTubeEmbedElement */
                 /* This class can be used for other common styles for these embeds if needed */
@@ -5633,7 +6001,6 @@ async function main() {
 
             // Recalculate and display initial media stats
             await recalculateAndStoreMediaStats(); // This updates localStorage
-            updateDisplayedStatistics(); // This reads from localStorage and updates GUI
 
             // Restore viewer state
             if (localStorage.getItem(VIEWER_OPEN_KEY) === 'true' && otkViewer) {
@@ -5653,7 +6020,7 @@ async function main() {
 
 
             // Load initial data and render list (stats are already updated)
-            renderThreadList();
+            refreshThreadsAndMessages();
             // updateDisplayedStatistics(); // Already called after recalculate
 
             // Start background refresh if not disabled
